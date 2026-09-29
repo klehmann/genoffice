@@ -13,11 +13,13 @@ import { ar } from './dialogs/ar'
 import { pt } from './dialogs/pt'
 import { it } from './dialogs/it'
 import { pl } from './dialogs/pl'
+import { cs } from './dialogs/cs'
 import { nl } from './dialogs/nl'
 import { ms } from './dialogs/ms'
 import { he } from './dialogs/he'
 import { hi } from './dialogs/hi'
 import { zhTW } from './dialogs/zh-TW'
+import { vi } from './dialogs/vi'
 
 /** Copy for the dialogs (advanced filter, cell format, pivot table, header/footer, symbols, slicer…) */
 export const dialogStrings = defineStrings({
@@ -35,9 +37,11 @@ export const dialogStrings = defineStrings({
   pt,
   it,
   pl,
+  cs,
   nl,
   ms,
   he,
   hi,
   'zh-TW': zhTW,
+  vi,
 })

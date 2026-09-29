@@ -131,7 +131,6 @@ export const nl = {
   appMoreItems: '+{count} meer…',
   appTruncationNote: 'Eerste {shown} van {total}',
   appGoToButtonTitle: 'Ga naar (⌘G)',
-  appNameBoxTitle: 'Naamvak — typ een adres of naam en druk op Enter',
   appPivotChartHintIn: 'Een draaigrafiek maken op basis van de huidige draaitabel',
   appPivotChartHintOut:
     'Selecteer eerst een cel in de uitvoer van de draaitabel en kies dan een grafiektype',
@@ -295,6 +294,7 @@ export const nl = {
   appAiDone: 'AI is klaar',
   appAiTurnLimit:
     '(Limiet voor toolaanroepen voor deze aanvraag bereikt; het bovenstaande antwoord is gebaseerd op wat tot nu toe is gelezen en kan onvolledig zijn.)',
+  appAiTruncatedNote: '(Het antwoord is afgekapt door de lengtelimiet en is mogelijk onvolledig.)',
   appAiStopped: '(gestopt)',
   appAiNoSummary: 'AI is klaar zonder samenvatting.',
   appAiNoAction:
@@ -315,16 +315,24 @@ export const nl = {
     'Deze pictogramcombinatie kan niet worden opgeslagen als xlsx — kies een andere pictogramset.',
   appNeedFullLoadSort:
     'Sorteren, filteren, bereiken verplaatsen en tekst splitsen vereisen de volledig geladen modus — deze werkmap is te groot en wordt gedeeltelijk streamend geladen.',
+  appFullLoadFilterTitle: 'Filteren vereist volledig laden',
+  appFullLoadFilterBody:
+    'Deze werkmap is groot en slechts gedeeltelijk gestreamd. Filteren (inclusief waardetellingen) heeft de volledige gegevens nodig. De hele werkmap nu laden?',
+  appFullLoadStart: 'Alles laden',
+  appFullLoadRunning: 'De hele werkmap wordt geladen — filteren is beschikbaar zodra dit klaar is…',
+  appFullLoadTooLarge:
+    'Deze werkmap is te groot om volledig in het geheugen te laden; filteren is niet beschikbaar voor dit bestand.',
+  appDialogCancel: 'Annuleren',
   appPivotSheetNoMove:
     'Dit werkblad bevat een draaitabel — bereiken verplaatsen wordt nog niet ondersteund.',
+  appMergeOverTable:
+    'De selectie overlapt een Excel-tabel — cellen samenvoegen in een tabel wordt nog niet ondersteund.',
   appTableFilterNoEdit:
     'Het filter van dit werkblad hoort bij een Excel-tabel — de bewerking kan nog niet worden opgeslagen.',
   appAutofillStreaming:
     'Automatisch doorvoeren naar een gebied dat nog streamend wordt geladen, is nog niet toegestaan.',
   appDvNeedsIndexed:
     'Voor het bewerken van gegevensvalidatie moet dit werkblad eerst volledig geïndexeerd zijn — probeer het zo opnieuw.',
-  appDuplicateNeedsFullLoad:
-    'Het dupliceren van een werkblad vereist de volledig geladen modus — deze werkmap is te groot en wordt gedeeltelijk streamend geladen.',
   appPivotSheetNoDuplicate:
     'Dit werkblad bevat een draaitabel — dupliceren wordt nog niet ondersteund.',
   appDuplicateScopedNames:
@@ -508,6 +516,7 @@ export const nl = {
   appBridgeUnavailable:
     'De bestandsbridge van de desktop is niet beschikbaar. Start de Electron-app opnieuw.',
   appOpenCanceled: 'Werkmapselectie geannuleerd.',
+  appOpeningWorkbook: 'Werkmap openen…',
   appOpened: '{name} geopend — celbewerkingen slaat u terug op met ⌘S.',
   appOpenFailed: 'Kan de werkmap niet openen.',
   appPageSetupNeedsFile:
@@ -545,6 +554,12 @@ export const nl = {
   appPdfCanceled: 'PDF-export geannuleerd.',
   appPdfExported: '{path} geëxporteerd.',
   appPdfExportFailed: 'Kan de PDF niet exporteren.',
+  appPrintPreparing: 'Afdrukken voorbereiden…',
+  appPrintSent: 'Naar de printer verzonden.',
+  appPrintCanceled: 'Afdrukken geannuleerd.',
+  appPrintFailed: 'Kan niet afdrukken.',
+  appPrintNeedsFullLoad:
+    'Afdrukken vereist dat de werkmap volledig is geladen. Wacht tot het laden is voltooid.',
   appCsvExportNeedsFullLoad:
     'CSV-export vereist een volledig geladen werkmap — wacht tot het laden is voltooid.',
   appCsvExportTooLarge: 'Het blad is te groot om als CSV te exporteren.',
@@ -582,6 +597,8 @@ export const nl = {
     'Wijzigingen aan gedefinieerde namen kunnen niet samen met rij-/kolom- of bladstructuurwijzigingen worden opgeslagen — sla in twee stappen op.',
   appSaveErrChangedOnDisk:
     'Het bestand is op schijf gewijzigd door een ander programma — opslaan afgebroken; open het bestand opnieuw en probeer het nog eens.',
+  appSaveErrTargetLocked:
+    'Het bestand kon niet worden vervangen — het lijkt vergrendeld door een ander programma (geopend in Excel, of wordt gescand/gesynchroniseerd). Sluit het daar en sla opnieuw op.',
   appSaveErrStylesheetLimited:
     'Het stylesheet van deze werkmap mist de basisstructuur; stijlwijzigingen kunnen niet worden opgeslagen.',
   appSaveErrPackageGuard:
@@ -639,6 +656,9 @@ export const nl = {
     'Werkmap volledig geladen — formules worden live opnieuw berekend, rijen/kolommen bewerkbaar.',
   appRangeMustBeVector: '{range} moet één rij of één kolom cellen zijn.',
   appRangeTooManyCells: '{range} beslaat meer dan {max} cellen.',
+  appCopyLoadingRange: '{range} wordt geladen om te kopiëren…',
+  appCopyValuesOnly:
+    '{range} alleen als waarden gekopieerd ({cells} cellen): opmaak blijft alleen tot {max} cellen behouden.',
   appSheetStillIndexing: 'Het werkblad wordt nog geïndexeerd — probeer het zo opnieuw.',
   appPrintNothing: 'Het werkblad bevat niets om af te drukken.',
   appPrintTooLarge:
@@ -674,6 +694,8 @@ export const nl = {
   appTabFormulas: 'Formules',
   appTabData: 'Gegevens',
   appTabReview: 'Controleren',
+  appRibbonCollapse: 'Het lint samenvouwen',
+  appRibbonExpand: 'Het lint uitvouwen',
   appTabView: 'Beeld',
   appTabAi: 'AI',
   appTabChartDesign: 'Grafiekontwerp',
@@ -1214,6 +1236,15 @@ export const nl = {
   appResetZoom: 'Zoomniveau herstellen',
   appZoomToSelection: 'Inzoomen op selectie',
   appZoomToSelectionDetail: 'Aanpassen aan selectie',
+  appStatAverage: 'Gemiddelde',
+  appStatCount: 'Aantal',
+  appStatNumericalCount: 'Numerieke telling',
+  appStatMin: 'Minimum',
+  appStatMax: 'Maximum',
+  appStatSum: 'Som',
+  appZoomLevel: 'Zoomniveau',
+  appNormalViewTip: 'Normale weergave',
+  appPageBreakPreviewTip: 'Pagina-eindevoorbeeld',
   appGroupWindow: 'Venster',
   appFreezePanes: 'Deelvensters blokkeren',
   appFreezeTitle: 'Rijen en kolommen blokkeren',
@@ -1257,6 +1288,9 @@ export const nl = {
   appCutTitle: 'Knippen ⌘X',
   appCopyTitle: 'Kopiëren ⌘C',
   appFormatPainter: 'Opmaak kopiëren/plakken',
+  appFormatPainterTip: 'Opmaak kopiëren/plakken — dubbelklik om het aan te houden tot Esc',
+  appFormatPainterLocked:
+    'Opmaak kopiëren vergrendeld — selecteer bereiken om op te maken; Esc of klik op de knop om te stoppen.',
   appGroupFont: 'Lettertype',
   appIncreaseFontSize: 'Tekengrootte vergroten',
   appDecreaseFontSize: 'Tekengrootte verkleinen',
@@ -1332,6 +1366,8 @@ export const nl = {
   appFormatMenu: 'Opmaak',
   appRowHeight: 'Rijhoogte',
   appColWidth: 'Kolombreedte',
+  appAutoFitRowHeight: 'Rijhoogte automatisch aanpassen',
+  appAutoFitColWidth: 'Kolombreedte automatisch aanpassen',
   appRowHeightLabel: 'Rijhoogte (punten)',
   appColWidthLabel: 'Kolombreedte (tekens)',
   appDeleteRow: 'Rij verwijderen',
@@ -1348,4 +1384,6 @@ export const nl = {
   appFindTitle: 'Zoeken en selecteren ⌘F',
   appReplace: 'Vervangen',
   appGoTo: 'Ga naar',
+  appInsertCells: 'Cellen invoegen…',
+  appDeleteCells: 'Cellen verwijderen…',
 } satisfies Record<keyof typeof zh, string>

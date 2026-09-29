@@ -44,16 +44,37 @@ export function normalizeRecentQuery(
   raw: unknown,
 ): Required<Omit<RecentQuery, 'ext'>> & { ext?: string } {
   const query = (raw ?? {}) as RecentQuery
-  const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset!)) : 0
-  const limit = Number.isFinite(query.limit)
-    ? Math.min(RECENT_PAGE_MAX, Math.max(0, Math.floor(query.limit!)))
+  // offset/limit cross the preload boundary, so an IPC caller may send "10" rather
+  // than 10; without coercion every page silently restarted at the first page.
+  const rawOffset = Number(query.offset)
+  const rawLimit = Number(query.limit)
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(RECENT_PAGE_MAX, Math.max(0, Math.floor(rawLimit)))
     : RECENT_PAGE_DEFAULT
-  const ext = typeof query.ext === 'string' && query.ext ? query.ext.toLowerCase() : undefined
+  // Sidebar keys are bare extensions ("xlsx"), but IPC callers may send
+  // ".xlsx", " XLSX ", or "..." — normalize so openable files cannot hide
+  // behind a filter that only differs in dots/case/whitespace.
+  const rawExt =
+    typeof query.ext === 'string' ? query.ext.trim().toLowerCase().replace(/^\.+/, '') : ''
+  const ext = rawExt ? rawExt : undefined
   return { offset, limit, ext }
 }
 
 /** sidebar filter keys that stand for a family of extensions, not one exact ext */
-const EXT_FAMILY: Record<string, readonly string[]> = { xlsx: ['xlsx', 'xlsm'] }
+export const EXT_FAMILY: Record<string, readonly string[]> = {
+  // delimited text belongs to the sheets family: Home's own FILTER_FAMILY and
+  // the shell's open routing both treat .csv/.tsv as spreadsheets, so a
+  // sidebar filtered on "xlsx" must page them in too (csv was missing here).
+  xlsx: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv'],
+  html: ['html', 'htm'],
+}
+
+/** Family-aware extension match for sidebar filters (recents and starred share it). */
+export function matchesExtFamily(entryExt: string, filterExt: string): boolean {
+  const family = EXT_FAMILY[filterExt]
+  return family ? family.includes(entryExt) : entryExt === filterExt
+}
 
 /** Page over the recents paths, preserving the source's newest-first order (unavailable paths stay, flagged missing). */
 export function pageRecentPaths(
@@ -63,8 +84,7 @@ export function pageRecentPaths(
 ): RecentPage {
   const { offset, limit, ext } = normalizeRecentQuery(raw)
   const all = statPathEntries(paths, starredPaths)
-  const family = ext ? (EXT_FAMILY[ext] ?? [ext]) : undefined
-  const filtered = family ? all.filter((entry) => family.includes(entry.ext)) : all
+  const filtered = ext ? all.filter((entry) => matchesExtFamily(entry.ext, ext)) : all
   return {
     entries: limit === 0 ? [] : filtered.slice(offset, offset + limit),
     total: filtered.length,

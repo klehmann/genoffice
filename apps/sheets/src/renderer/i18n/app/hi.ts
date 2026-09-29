@@ -127,7 +127,6 @@ export const hi = {
   appMoreItems: '+{count} और…',
   appTruncationNote: '{total} में से पहले {shown}',
   appGoToButtonTitle: 'इस पर जाएँ (⌘G)',
-  appNameBoxTitle: 'नाम बॉक्स — पता या नाम टाइप करें, फिर Enter दबाएँ',
   appPivotChartHintIn: 'वर्तमान पिवट टेबल से पिवट चार्ट बनाएँ',
   appPivotChartHintOut: 'पहले पिवट टेबल आउटपुट के भीतर एक सेल चुनें, फिर चार्ट प्रकार चुनें',
   appChartColumn: 'स्तंभ',
@@ -283,6 +282,7 @@ export const hi = {
   appAiDone: 'AI पूर्ण हुआ',
   appAiTurnLimit:
     '(इस अनुरोध के लिए टूल-कॉल की सीमा पूरी हो गई; ऊपर का उत्तर अब तक पढ़ी गई जानकारी पर आधारित है और अधूरा हो सकता है।)',
+  appAiTruncatedNote: '(उत्तर लंबाई सीमा के कारण कट गया और अधूरा हो सकता है।)',
   appAiStopped: '(रोका गया)',
   appAiNoSummary: 'AI बिना सारांश के समाप्त हुआ।',
   appAiNoAction:
@@ -302,15 +302,23 @@ export const hi = {
     'यह आइकन संयोजन xlsx में सहेजा नहीं जा सकता — कृपया कोई अन्य आइकन सेट चुनें।',
   appNeedFullLoadSort:
     'क्रमबद्ध करने, फ़िल्टर करने, श्रेणियाँ स्थानांतरित करने और पाठ विभाजित करने के लिए पूर्ण-लोड मोड चाहिए — यह कार्यपुस्तिका बहुत बड़ी है और आंशिक रूप से स्ट्रीम होती है।',
+  appFullLoadFilterTitle: 'फ़िल्टर के लिए पूर्ण लोड आवश्यक है',
+  appFullLoadFilterBody:
+    'यह वर्कबुक बड़ी है और अभी केवल आंशिक रूप से स्ट्रीम हुई है। फ़िल्टर (मान गिनती सहित) के सही होने के लिए पूरा डेटा चाहिए। अभी पूरी वर्कबुक लोड करें?',
+  appFullLoadStart: 'सब लोड करें',
+  appFullLoadRunning: 'पूरी वर्कबुक लोड हो रही है — पूरा होते ही फ़िल्टर उपलब्ध होगा…',
+  appFullLoadTooLarge:
+    'यह वर्कबुक मेमोरी में पूरी तरह लोड करने के लिए बहुत बड़ी है; इस फ़ाइल पर फ़िल्टर उपलब्ध नहीं है।',
+  appDialogCancel: 'रद्द करें',
   appPivotSheetNoMove: 'इस शीट में पिवट टेबल है — श्रेणियाँ स्थानांतरित करना अभी समर्थित नहीं है।',
+  appMergeOverTable:
+    'चयन Excel तालिका से ओवरलैप करता है — तालिका के भीतर सेल मर्ज करना अभी समर्थित नहीं है।',
   appTableFilterNoEdit:
     'इस शीट का फ़िल्टर एक Excel तालिका का है — इसका संपादन अभी सहेजा नहीं जा सकता।',
   appAutofillStreaming:
     'जो क्षेत्र अभी स्ट्रीम होकर लोड हो रहा है, उसमें स्वतः भरण की अनुमति अभी नहीं है।',
   appDvNeedsIndexed:
     'डेटा सत्यापन संपादित करने के लिए पहले इस शीट का अनुक्रमण पूरा होना चाहिए — थोड़ी देर बाद फिर प्रयास करें।',
-  appDuplicateNeedsFullLoad:
-    'शीट की प्रतिलिपि बनाने के लिए पूर्ण-लोड मोड चाहिए — यह कार्यपुस्तिका बहुत बड़ी है और आंशिक रूप से स्ट्रीम होती है।',
   appPivotSheetNoDuplicate: 'इस शीट में पिवट टेबल है — इसकी प्रतिलिपि बनाना अभी समर्थित नहीं है।',
   appDuplicateScopedNames:
     'इस शीट में शीट-स्तरीय परिभाषित नाम हैं — इसकी प्रतिलिपि बनाना अभी समर्थित नहीं है।',
@@ -478,6 +486,7 @@ export const hi = {
   appColumnLabel: 'स्तंभ {col}',
   appBridgeUnavailable: 'डेस्कटॉप फ़ाइल ब्रिज उपलब्ध नहीं है। Electron ऐप पुनः प्रारंभ करें।',
   appOpenCanceled: 'कार्यपुस्तिका चयन रद्द किया गया।',
+  appOpeningWorkbook: 'कार्यपुस्तिका खोली जा रही है…',
   appOpened: '{name} खोला गया — सेल संपादन ⌘S से फ़ाइल में वापस सहेजे जाते हैं।',
   appOpenFailed: 'कार्यपुस्तिका खोली नहीं जा सकी।',
   appPageSetupNeedsFile: 'पहले एक XLSX फ़ाइल खोलें — पृष्ठ सेटअप फ़ाइल में सहेजा जाता है।',
@@ -513,6 +522,12 @@ export const hi = {
   appPdfCanceled: 'PDF निर्यात रद्द किया गया।',
   appPdfExported: '{path} निर्यात किया गया।',
   appPdfExportFailed: 'PDF निर्यात नहीं किया जा सका।',
+  appPrintPreparing: 'प्रिंट की तैयारी हो रही है…',
+  appPrintSent: 'प्रिंटर को भेज दिया गया।',
+  appPrintCanceled: 'प्रिंट रद्द किया गया।',
+  appPrintFailed: 'प्रिंट नहीं किया जा सका।',
+  appPrintNeedsFullLoad:
+    'प्रिंट करने के लिए कार्यपुस्तिका पूरी लोड होनी चाहिए — लोडिंग पूरी होने तक प्रतीक्षा करें।',
   appCsvExportNeedsFullLoad:
     'CSV निर्यात के लिए पूरी तरह लोड की गई कार्यपुस्तिका चाहिए — लोडिंग पूरी होने तक प्रतीक्षा करें।',
   appCsvExportTooLarge: 'शीट बहुत बड़ी है, CSV के रूप में निर्यात नहीं की जा सकती।',
@@ -548,6 +563,8 @@ export const hi = {
     'परिभाषित नामों के बदलाव पंक्ति/स्तंभ या शीट संरचना बदलावों के साथ नहीं सहेजे जा सकते — दो बार में सहेजें।',
   appSaveErrChangedOnDisk:
     'फ़ाइल को डिस्क पर किसी अन्य प्रोग्राम ने बदल दिया — सहेजना रोक दिया गया; फ़ाइल फिर से खोलकर पुनः प्रयास करें।',
+  appSaveErrTargetLocked:
+    'फ़ाइल बदली नहीं जा सकी — यह किसी अन्य प्रोग्राम द्वारा लॉक लगती है (Excel में खुली, या स्कैन/सिंक हो रही है)। उसे बंद करके फिर से सहेजें।',
   appSaveErrStylesheetLimited:
     'इस कार्यपुस्तिका की स्टाइलशीट में बुनियादी संरचना नहीं है, इसलिए शैली बदलाव सहेजे नहीं जा सकते।',
   appSaveErrPackageGuard:
@@ -604,6 +621,9 @@ export const hi = {
     'कार्यपुस्तिका पूरी तरह लोड हुई — सूत्र लाइव पुनर्गणित होते हैं, पंक्तियाँ/स्तंभ संपादन-योग्य।',
   appRangeMustBeVector: '{range} सेलों की एक ही पंक्ति या एक ही स्तंभ होना चाहिए।',
   appRangeTooManyCells: '{range} {max} से अधिक सेल कवर करता है।',
+  appCopyLoadingRange: 'कॉपी के लिए {range} लोड हो रहा है…',
+  appCopyValuesOnly:
+    '{range} केवल मानों के रूप में कॉपी किया गया ({cells} सेल): शैलियाँ केवल {max} सेल तक ही रखी जाती हैं।',
   appSheetStillIndexing: 'शीट अभी अनुक्रमित हो रही है — थोड़ी देर बाद फिर प्रयास करें।',
   appPrintNothing: 'शीट में मुद्रित करने के लिए कुछ नहीं है।',
   appPrintTooLarge: 'मुद्रण श्रेणी बहुत बड़ी है — पृष्ठ लेआउट टैब पर छोटा मुद्रण क्षेत्र सेट करें।',
@@ -637,6 +657,8 @@ export const hi = {
   appTabFormulas: 'सूत्र',
   appTabData: 'डेटा',
   appTabReview: 'समीक्षा',
+  appRibbonCollapse: 'रिबन संक्षिप्त करें',
+  appRibbonExpand: 'रिबन विस्तृत करें',
   appTabView: 'दृश्य',
   appTabAi: 'AI',
   appTabChartDesign: 'चार्ट डिज़ाइन',
@@ -1177,6 +1199,15 @@ export const hi = {
   appResetZoom: 'ज़ूम रीसेट करें',
   appZoomToSelection: 'चयन पर ज़ूम करें',
   appZoomToSelectionDetail: 'चयन के अनुसार फ़िट करें',
+  appStatAverage: 'औसत',
+  appStatCount: 'गिनती',
+  appStatNumericalCount: 'संख्यात्मक गिनती',
+  appStatMin: 'न्यूनतम',
+  appStatMax: 'अधिकतम',
+  appStatSum: 'योग',
+  appZoomLevel: 'ज़ूम स्तर',
+  appNormalViewTip: 'सामान्य दृश्य',
+  appPageBreakPreviewTip: 'पृष्ठ विराम पूर्वावलोकन',
   appGroupWindow: 'विंडो',
   appFreezePanes: 'फलक फ़्रीज़ करें',
   appFreezeTitle: 'पंक्तियाँ और स्तंभ फ़्रीज़ करें',
@@ -1220,6 +1251,9 @@ export const hi = {
   appCutTitle: 'काटें ⌘X',
   appCopyTitle: 'प्रतिलिपि बनाएँ ⌘C',
   appFormatPainter: 'फ़ॉर्मेट पेंटर',
+  appFormatPainterTip: 'फ़ॉर्मेट पेंटर — Esc तक चालू रखने के लिए डबल-क्लिक करें',
+  appFormatPainterLocked:
+    'फ़ॉर्मेट पेंटर लॉक है — लागू करने के लिए रेंज चुनें; Esc या बटन क्लिक से रोकें।',
   appGroupFont: 'फ़ॉन्ट',
   appIncreaseFontSize: 'फ़ॉन्ट आकार बढ़ाएँ',
   appDecreaseFontSize: 'फ़ॉन्ट आकार घटाएँ',
@@ -1294,6 +1328,8 @@ export const hi = {
   appFormatMenu: 'प्रारूप',
   appRowHeight: 'पंक्ति ऊंचाई',
   appColWidth: 'स्तंभ चौड़ाई',
+  appAutoFitRowHeight: 'पंक्ति ऊँचाई स्वतः फ़िट करें',
+  appAutoFitColWidth: 'स्तंभ चौड़ाई स्वतः फ़िट करें',
   appRowHeightLabel: 'पंक्ति ऊंचाई (पॉइंट)',
   appColWidthLabel: 'स्तंभ चौड़ाई (वर्ण)',
   appDeleteRow: 'पंक्ति हटाएँ',
@@ -1310,4 +1346,6 @@ export const hi = {
   appFindTitle: 'ढूँढें और चुनें ⌘F',
   appReplace: 'बदलें',
   appGoTo: 'इस पर जाएँ',
+  appInsertCells: 'सेल सम्मिलित करें…',
+  appDeleteCells: 'सेल हटाएँ…',
 } satisfies Record<keyof typeof zh, string>

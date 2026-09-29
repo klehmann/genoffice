@@ -580,6 +580,35 @@ describe('setElementLink / getElementLink', () => {
     expect(last.anchor.originalXml).toContain('ppaction://hlinksldjump')
   })
 
+  it('named show action writes hlinkshowjump with an empty r:id and no relationship', async () => {
+    const opened = await openPptx(fx('01_standard_business.pptx'))
+    const slide = opened.deck.slides[0]!
+    const relsBefore = opened.archive.readText(relsPathFor(slide.path))
+    const el = addElement(slide, { kind: 'rect', offset: { ...OFF } })
+    const s1 = setElementLink(opened, 0, el.id, { kind: 'action', action: 'nextslide' })!
+    expect(s1.elements.at(-1)!.anchor.originalXml).toContain(
+      '<a:hlinkClick xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="" action="ppaction://hlinkshowjump?jump=nextslide"/>',
+    )
+    expect(opened.archive.readText(relsPathFor(slide.path))).toBe(relsBefore)
+
+    const reopened = await openPptx(await savePptx(opened))
+    const last = reopened.deck.slides[0]!.elements.at(-1)!
+    expect(getElementLink(reopened, 0, last.id)).toEqual({ kind: 'action', action: 'nextslide' })
+    expect(getSlideLinks(reopened, 0)).toContainEqual({
+      elementId: last.id,
+      target: { kind: 'action', action: 'nextslide' },
+    })
+
+    // Replacing with a url and clearing both work on an action link
+    const s2 = setElementLink(reopened, 0, last.id, { kind: 'action', action: 'endshow' })!
+    expect(getElementLink(reopened, 0, s2.elements.at(-1)!.id)).toEqual({
+      kind: 'action',
+      action: 'endshow',
+    })
+    const s3 = setElementLink(reopened, 0, s2.elements.at(-1)!.id, null)!
+    expect(s3.elements.at(-1)!.anchor.originalXml).not.toContain('hlinkClick')
+  })
+
   it('clearing the link removes hlinkClick', async () => {
     const opened = await openPptx(fx('01_standard_business.pptx'))
     const slide = opened.deck.slides[0]!
@@ -665,6 +694,28 @@ describe('setElementLink / getElementLink', () => {
     expect(links[0]!.elementId).not.toBe(grouped.groupId)
     const group = grouped.slide.elements.find((e) => e.id === grouped.groupId) as GroupElement
     expect(group.children.some((c) => c.id === links[0]!.elementId)).toBe(true)
+  })
+
+  it('getSlideLinks keeps a group own link when its header carries attributes', async () => {
+    const opened = await openPptx(fx('01_standard_business.pptx'))
+    const slide = opened.deck.slides[0]!
+    const a = addElement(slide, { kind: 'rect', offset: { ...OFF } })
+    const b = addElement(slide, { kind: 'ellipse', offset: { ...OFF, x: 5486400 } })
+    const grouped = groupElements(opened, 0, [a.id, b.id])!
+    const linked = setElementLink(opened, 0, grouped.groupId, {
+      kind: 'url',
+      url: 'https://group.dev',
+    })!
+    const group = linked.elements.find((e) => e.type === 'group') as GroupElement
+    // Producers may put attributes on the group's non-visual header
+    group.anchor.originalXml = group.anchor.originalXml.replace(
+      '<p:nvGrpSpPr>',
+      '<p:nvGrpSpPr foo="1">',
+    )
+
+    expect(getSlideLinks(opened, 0)).toEqual([
+      { elementId: group.id, target: { kind: 'url', url: 'https://group.dev' } },
+    ])
   })
 })
 

@@ -132,7 +132,6 @@ export const es = {
   appMoreItems: '+{count} más…',
   appTruncationNote: 'Primeros {shown} de {total}',
   appGoToButtonTitle: 'Ir a (⌘G)',
-  appNameBoxTitle: 'Cuadro de nombres — escriba una dirección o un nombre y presione Entrar',
   appPivotChartHintIn: 'Crear un gráfico dinámico a partir de la tabla dinámica actual',
   appPivotChartHintOut:
     'Seleccione primero una celda dentro de la salida de la tabla dinámica y luego elija un tipo de gráfico',
@@ -299,6 +298,8 @@ export const es = {
   appAiDone: 'La IA ha terminado',
   appAiTurnLimit:
     '(Se alcanzó el límite de rondas de llamadas a herramientas para esta solicitud; la respuesta anterior se basa en lo leído hasta ahora y puede estar incompleta.)',
+  appAiTruncatedNote:
+    '(La respuesta fue cortada por el límite de longitud y puede estar incompleta.)',
   appAiStopped: '(detenido)',
   appAiNoSummary: 'La IA terminó sin generar un resumen.',
   appAiNoAction:
@@ -319,15 +320,23 @@ export const es = {
     'Esta combinación de iconos no se puede guardar en xlsx — elige otro conjunto de iconos.',
   appNeedFullLoadSort:
     'Ordenar, filtrar, mover rangos y dividir texto en columnas requieren el modo de carga completa — este libro es demasiado grande y se carga parcialmente por streaming.',
+  appFullLoadFilterTitle: 'El filtrado requiere la carga completa',
+  appFullLoadFilterBody:
+    'Este libro es grande y solo se ha cargado parcialmente en streaming. El filtrado (incluido el recuento de valores) necesita los datos completos. ¿Cargar todo el libro ahora?',
+  appFullLoadStart: 'Cargar todo',
+  appFullLoadRunning: 'Cargando el libro completo: el filtrado estará disponible al terminar…',
+  appFullLoadTooLarge:
+    'Este libro es demasiado grande para cargarlo por completo en memoria; el filtrado no está disponible para este archivo.',
+  appDialogCancel: 'Cancelar',
   appPivotSheetNoMove: 'Esta hoja contiene una tabla dinámica — mover rangos aún no se admite.',
+  appMergeOverTable:
+    'La selección se superpone con una tabla de Excel — combinar celdas dentro de una tabla aún no es compatible.',
   appTableFilterNoEdit:
     'El filtro de esta hoja pertenece a una tabla de Excel — su edición aún no se puede guardar.',
   appAutofillStreaming:
     'Aún no se permite el autorrelleno hacia un área que todavía se está cargando por streaming.',
   appDvNeedsIndexed:
     'Editar la validación de datos requiere que esta hoja esté totalmente indexada — inténtelo de nuevo en un momento.',
-  appDuplicateNeedsFullLoad:
-    'Duplicar una hoja requiere el modo de carga completa — este libro es demasiado grande y se carga parcialmente por streaming.',
   appPivotSheetNoDuplicate:
     'Esta hoja contiene una tabla dinámica — su duplicación aún no se admite.',
   appDuplicateScopedNames:
@@ -513,6 +522,7 @@ export const es = {
   appBridgeUnavailable:
     'El puente de archivos de escritorio no está disponible. Reinicie la aplicación Electron.',
   appOpenCanceled: 'Selección de libro cancelada.',
+  appOpeningWorkbook: 'Abriendo libro…',
   appOpened: 'Se abrió {name} — las ediciones de celdas se vuelven a guardar con ⌘S.',
   appOpenFailed: 'No se puede abrir el libro.',
   appPageSetupNeedsFile:
@@ -550,6 +560,12 @@ export const es = {
   appPdfCanceled: 'Exportación a PDF cancelada.',
   appPdfExported: 'Se exportó {path}.',
   appPdfExportFailed: 'No se puede exportar el PDF.',
+  appPrintPreparing: 'Preparando la impresión…',
+  appPrintSent: 'Enviado a la impresora.',
+  appPrintCanceled: 'Impresión cancelada.',
+  appPrintFailed: 'No se puede imprimir.',
+  appPrintNeedsFullLoad:
+    'Para imprimir, el libro debe estar completamente cargado; espere a que termine la carga.',
   appCsvExportNeedsFullLoad:
     'La exportación a CSV requiere el libro completamente cargado — espere a que termine la carga.',
   appCsvExportTooLarge: 'La hoja es demasiado grande para exportarla como CSV.',
@@ -587,6 +603,8 @@ export const es = {
     'Los cambios de nombres definidos no se pueden guardar junto con cambios de filas/columnas o de estructura de hojas — guarde en dos pasos.',
   appSaveErrChangedOnDisk:
     'Otro programa modificó el archivo en el disco — guardado cancelado; vuelva a abrir el archivo e inténtelo de nuevo.',
+  appSaveErrTargetLocked:
+    'No se pudo reemplazar el archivo: parece bloqueado por otro programa (abierto en Excel o en análisis/sincronización). Ciérralo allí y vuelve a guardar.',
   appSaveErrStylesheetLimited:
     'La hoja de estilos de este libro carece de estructura básica; los cambios de estilo no se pueden guardar.',
   appSaveErrPackageGuard:
@@ -642,6 +660,9 @@ export const es = {
     'Libro completamente cargado — las fórmulas se recalculan en vivo y las filas/columnas son editables.',
   appRangeMustBeVector: '{range} debe ser una sola fila o una sola columna de celdas.',
   appRangeTooManyCells: '{range} abarca más de {max} celdas.',
+  appCopyLoadingRange: 'Cargando {range} para copiar…',
+  appCopyValuesOnly:
+    '{range} copiado solo como valores ({cells} celdas): los estilos solo se conservan hasta {max} celdas.',
   appSheetStillIndexing: 'La hoja todavía se está indexando — inténtelo de nuevo en un momento.',
   appPrintNothing: 'La hoja no tiene nada que imprimir.',
   appPrintTooLarge:
@@ -677,6 +698,8 @@ export const es = {
   appTabFormulas: 'Fórmulas',
   appTabData: 'Datos',
   appTabReview: 'Revisar',
+  appRibbonCollapse: 'Contraer la cinta de opciones',
+  appRibbonExpand: 'Expandir la cinta de opciones',
   appTabView: 'Vista',
   appTabAi: 'IA',
   appTabChartDesign: 'Diseño de gráfico',
@@ -1219,6 +1242,15 @@ export const es = {
   appResetZoom: 'Restablecer zoom',
   appZoomToSelection: 'Ampliar selección',
   appZoomToSelectionDetail: 'Ajustar a la selección',
+  appStatAverage: 'Promedio',
+  appStatCount: 'Recuento',
+  appStatNumericalCount: 'Recuento numérico',
+  appStatMin: 'Mín.',
+  appStatMax: 'Máx.',
+  appStatSum: 'Suma',
+  appZoomLevel: 'Nivel de zoom',
+  appNormalViewTip: 'Vista normal',
+  appPageBreakPreviewTip: 'Vista previa de salto de página',
   appGroupWindow: 'Ventana',
   appFreezePanes: 'Inmovilizar paneles',
   appFreezeTitle: 'Inmovilizar filas y columnas',
@@ -1262,6 +1294,9 @@ export const es = {
   appCutTitle: 'Cortar ⌘X',
   appCopyTitle: 'Copiar ⌘C',
   appFormatPainter: 'Copiar formato',
+  appFormatPainterTip: 'Copiar formato — doble clic para mantenerlo activo hasta Esc',
+  appFormatPainterLocked:
+    'Copiar formato bloqueado — seleccione los rangos a pintar; Esc o un clic en el botón lo detiene.',
   appGroupFont: 'Fuente',
   appIncreaseFontSize: 'Aumentar tamaño de fuente',
   appDecreaseFontSize: 'Disminuir tamaño de fuente',
@@ -1337,6 +1372,8 @@ export const es = {
   appFormatMenu: 'Formato',
   appRowHeight: 'Alto de fila',
   appColWidth: 'Ancho de columna',
+  appAutoFitRowHeight: 'Autoajustar alto de fila',
+  appAutoFitColWidth: 'Autoajustar ancho de columna',
   appRowHeightLabel: 'Alto de fila (puntos)',
   appColWidthLabel: 'Ancho de columna (caracteres)',
   appDeleteRow: 'Eliminar fila',
@@ -1353,4 +1390,6 @@ export const es = {
   appFindTitle: 'Buscar y seleccionar ⌘F',
   appReplace: 'Reemplazar',
   appGoTo: 'Ir a',
+  appInsertCells: 'Insertar celdas…',
+  appDeleteCells: 'Eliminar celdas…',
 } satisfies Record<keyof typeof zh, string>

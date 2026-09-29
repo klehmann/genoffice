@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { StructuralOp } from '../src/gateway/xlsx-structure'
+import type { StructuralOp } from '@genoffice/xlsx-gateway/gateway/xlsx-structure'
 import {
   fileRangeToScreenRange,
   fileRangeToScreenRanges,
@@ -116,6 +116,7 @@ describe('mapRangeResultToScreen', () => {
       hyperlinks: [{ row: 2, column: 0, target: 'https://example.com' }],
       conditionalRules: [],
       autoFilter: null,
+      autoFilterColumns: [],
       dataValidations: [],
       sheetProtection: null,
       rowBreaks: [],

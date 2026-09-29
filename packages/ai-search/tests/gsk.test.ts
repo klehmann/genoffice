@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import {
   gskChildEnv,
   setGskProxyUrl,
@@ -6,11 +6,15 @@ import {
   parseGskWebSearch,
   parseGskImageSearch,
   parseGskGeneratedImage,
-  parseGskConvertResult,
   parseGskPastProjects,
   extractGskText,
   parseToolCliNdjson,
+  gskSlideGenerate,
+  MAX_SLIDE_ARTIFACT_BYTES,
+  MAX_TOOL_CLI_NDJSON_BYTES,
+  summarizeGskFailure,
 } from '../src/gsk'
+import { ResponseTooLargeError } from '@genoffice/electron-utils/remote-image'
 
 describe('parseGskOutput', () => {
   it('parses clean JSON', () => {
@@ -27,8 +31,68 @@ describe('parseGskOutput', () => {
     expect(parseGskOutput(out)).toEqual({ a: 1 })
   })
 
+  it('skips trailing log lines after JSON', () => {
+    const out = '{"status":"ok","data":[1,2]}\n[INFO] done in 120ms'
+    expect(parseGskOutput(out)).toEqual({ status: 'ok', data: [1, 2] })
+  })
+
+  it('parses multi-line JSON surrounded by leading and trailing noise', () => {
+    const out =
+      '[INFO] Calling /tools...\n{\n "a": 1,\n "b": [1, 2]\n}\n[INFO] cache hit\n[INFO] done'
+    expect(parseGskOutput(out)).toEqual({ a: 1, b: [1, 2] })
+  })
+
+  it('returns the root of a pretty-printed array followed by logs', () => {
+    const out = '{\n  "items": [\n    { "id": 1 },\n    { "id": 2 }\n  ]\n}\n[INFO] done'
+    expect(parseGskOutput(out)).toEqual({ items: [{ id: 1 }, { id: 2 }] })
+  })
+
   it('throws when no JSON present', () => {
     expect(() => parseGskOutput('[INFO] nothing here')).toThrow()
+  })
+
+  it('recovers past a log line that only looks like an array opener', () => {
+    expect(parseGskOutput('[INFO] progress {50%}\n{"status":"ok"}')).toEqual({ status: 'ok' })
+  })
+
+  it('takes the outer block, not the first inner one, of a large pretty payload', () => {
+    const rows = Array.from({ length: 2000 }, (_, i) => `    { "id": ${i}, "t": "row ${i}" },`)
+    const out = [
+      '[INFO] Calling /tools...',
+      '[INFO] cache hit',
+      '{',
+      '  "status": "ok",',
+      '  "data": [',
+      ...rows.slice(0, -1),
+      rows.at(-1)!.replace(/,$/, ''),
+      '  ]',
+      '}',
+      '[INFO] done in 900ms',
+    ].join('\n')
+    const parsed = parseGskOutput(out) as { status: string; data: unknown[] }
+    expect(parsed.status).toBe('ok')
+    expect(parsed.data).toHaveLength(2000)
+    expect(parsed.data[0]).toEqual({ id: 0, t: 'row 0' })
+  })
+
+  it('locates a large payload in linear time', () => {
+    const rows = Array.from({ length: 20_000 }, (_, i) => `  { "id": ${i} },`)
+    const out = [
+      '[INFO] starting',
+      '{',
+      '  "data": [',
+      ...rows.slice(0, -1),
+      rows.at(-1)!.replace(/,$/, ''),
+      '  ]',
+      '}',
+      '[INFO] done',
+    ].join('\n')
+    const started = performance.now()
+    const parsed = parseGskOutput(out) as { data: unknown[] }
+    const elapsed = performance.now() - started
+    expect(parsed.data).toHaveLength(20_000)
+    // the previous nested slice-and-reparse scan needed minutes at this size
+    expect(elapsed).toBeLessThan(5_000)
   })
 })
 
@@ -106,6 +170,17 @@ describe('parseGskWebSearch', () => {
   it('tolerates missing data', () => {
     expect(parseGskWebSearch({ status: 'ok' }, 5).results).toEqual([])
   })
+
+  it('clamps maxResults and truncates long fields', () => {
+    const big = 'x'.repeat(5000)
+    const raw = {
+      data: { organic_results: [{ title: big, link: 'https://a.com', snippet: big }] },
+    }
+    const r = parseGskWebSearch(raw, 1e9)
+    expect(r.results).toHaveLength(1)
+    expect(r.results[0]!.snippet.length).toBeLessThanOrEqual(2000)
+    expect(parseGskWebSearch(raw, NaN).results).toHaveLength(1)
+  })
 })
 
 describe('parseGskImageSearch', () => {
@@ -146,6 +221,18 @@ describe('parseGskImageSearch', () => {
     }
     const images = parseGskImageSearch(raw, 8)
     expect(images.map((i) => i.title)).toEqual(['ok'])
+  })
+
+  it('keeps benign images whose path or query merely mentions a stock host', () => {
+    const raw = {
+      data: [
+        { image_url: 'https://cdn.example.com/shutterstock-review.png', title: 'review' },
+        { image_url: 'https://img.example.com/a.jpg?ref=shutterstock', title: 'query' },
+        { image_url: 'https://media.gettyimages.com/x.jpg', title: 'blocked' },
+      ],
+    }
+    const images = parseGskImageSearch(raw, 8)
+    expect(images.map((i) => i.title)).toEqual(['review', 'query'])
   })
 })
 
@@ -229,29 +316,6 @@ describe('parseGskPastProjects', () => {
   })
 })
 
-describe('parseGskConvertResult', () => {
-  it('extracts the markdown link from the result text', () => {
-    const raw = {
-      status: 'ok',
-      data: {
-        result:
-          'Conversion complete. Download links:\n[report.docx](https://www.genspark.ai/api/files/s/JmS2WJHv)\n',
-      },
-    }
-    expect(parseGskConvertResult(raw)).toBe('https://www.genspark.ai/api/files/s/JmS2WJHv')
-  })
-
-  it('falls back to a bare URL without markdown', () => {
-    const raw = { status: 'ok', data: { result: 'Done: https://example.com/f.docx' } }
-    expect(parseGskConvertResult(raw)).toBe('https://example.com/f.docx')
-  })
-
-  it('throws when the result has no link', () => {
-    expect(() => parseGskConvertResult({ status: 'ok', data: { result: 'no link' } })).toThrow()
-    expect(() => parseGskConvertResult({ status: 'ok' })).toThrow()
-  })
-})
-
 describe('parseGskGeneratedImage', () => {
   it('prefers no-watermark url', () => {
     const raw = {
@@ -293,6 +357,117 @@ describe('extractGskText', () => {
   })
 })
 
+describe('gskSlideGenerate response caps', () => {
+  const originalApiKey = process.env.GSK_API_KEY
+  const slideResult = JSON.stringify({
+    status: 'ok',
+    data: { pptx_url: 'https://www.genspark.ai/api/files/deck.pptx', model: 'claude-opus-4-7' },
+  })
+  const downloadResult = JSON.stringify({
+    status: 'ok',
+    data: { download_url: 'https://cdn.example/deck.pptx' },
+  })
+
+  function stubSlideGenerate(artifact: () => Response) {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ndjsonResponse(slideResult))
+      .mockResolvedValueOnce(ndjsonResponse(downloadResult))
+      .mockImplementationOnce(() => Promise.resolve(artifact()))
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  function ndjsonResponse(payload: string, contentLength?: number): Response {
+    return new Response(payload, {
+      status: 200,
+      headers: {
+        'content-type': 'application/x-ndjson',
+        ...(contentLength === undefined ? {} : { 'content-length': String(contentLength) }),
+      },
+    })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    if (originalApiKey === undefined) delete process.env.GSK_API_KEY
+    else process.env.GSK_API_KEY = originalApiKey
+  })
+
+  it('returns the downloaded slide bytes within both caps', async () => {
+    process.env.GSK_API_KEY = 'test-key'
+    stubSlideGenerate(() => new Response(new Uint8Array([1, 2, 3, 4])))
+    await expect(gskSlideGenerate({ brief: 'a title slide' })).resolves.toEqual({
+      bytes: new Uint8Array([1, 2, 3, 4]),
+      model: 'claude-opus-4-7',
+    })
+  })
+
+  it('refuses a tool_cli NDJSON body that declares more than the NDJSON cap', async () => {
+    process.env.GSK_API_KEY = 'test-key'
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true
+      },
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(body, {
+          status: 200,
+          headers: {
+            'content-type': 'application/x-ndjson',
+            'content-length': String(MAX_TOOL_CLI_NDJSON_BYTES + 1),
+          },
+        }),
+      ),
+    )
+    await expect(gskSlideGenerate({ brief: 'a title slide' })).rejects.toBeInstanceOf(
+      ResponseTooLargeError,
+    )
+    expect(cancelled).toBe(true)
+  })
+
+  it('refuses a chunked tool_cli NDJSON body that streams past the NDJSON cap', async () => {
+    process.env.GSK_API_KEY = 'test-key'
+    const chunk = new Uint8Array(1024 * 1024)
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i <= MAX_TOOL_CLI_NDJSON_BYTES / chunk.byteLength; i++) {
+          controller.enqueue(chunk)
+        }
+        controller.close()
+      },
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(body, { status: 200, headers: { 'content-type': 'application/x-ndjson' } }),
+        ),
+    )
+    await expect(gskSlideGenerate({ brief: 'a title slide' })).rejects.toThrow(
+      /response larger than 8 MB/,
+    )
+  })
+
+  it('refuses a slide artifact download larger than the artifact cap', async () => {
+    process.env.GSK_API_KEY = 'test-key'
+    stubSlideGenerate(
+      () =>
+        new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-length': String(MAX_SLIDE_ARTIFACT_BYTES + 1) },
+        }),
+    )
+    await expect(gskSlideGenerate({ brief: 'a title slide' })).rejects.toBeInstanceOf(
+      ResponseTooLargeError,
+    )
+  })
+})
+
 describe('parseToolCliNdjson', () => {
   it('skips heartbeat lines and returns the final status line', () => {
     const text =
@@ -314,5 +489,73 @@ describe('parseToolCliNdjson', () => {
 
   it('throws when no result line exists', () => {
     expect(() => parseToolCliNdjson('{"heartbeat":1}\nnot json')).toThrow(/No result line/)
+  })
+})
+
+describe('summarizeGskFailure', () => {
+  // trimmed version of the gateway page Genspark serves for refused calls
+  const HTML_403 = `<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <title>Genspark</title>
+  </head>
+  <body>
+    <div class="tt">Service unavailable. Please check your internet connection.</div>
+    <form id="codeForm">
+      <input type="text" id="codeInput" maxlength="8" />
+      <button type="submit" class="submit-button">Submit</button>
+    </form>
+  </body>
+  <script>function setCookie(event) { location.reload() }</script>
+</html>`
+
+  it('distills an HTML error page to its status and visible text', () => {
+    const s = summarizeGskFailure(`HTTP 403: ${HTML_403}`)
+    expect(s).toBe(
+      'HTTP 403 (HTML error page): Service unavailable. Please check your internet connection.',
+    )
+    expect(s).not.toContain('<')
+  })
+
+  it('labels an HTML page that carries no status', () => {
+    expect(summarizeGskFailure(HTML_403)).toBe(
+      'an HTML error page: Service unavailable. Please check your internet connection.',
+    )
+  })
+
+  it('keeps a short plain message as it is', () => {
+    expect(summarizeGskFailure('HTTP 500: internal error')).toBe('HTTP 500: internal error')
+    expect(summarizeGskFailure('deck_context must be an object')).toBe(
+      'deck_context must be an object',
+    )
+  })
+
+  it('keeps the [ERROR] lines, drops [INFO] chatter and crash noise', () => {
+    const s = summarizeGskFailure(
+      '[INFO] Uploading a.png...\n[INFO] Calling /file/upload_url...\n[ERROR] Failed to get upload URL: HTTP 403: Forbidden\nAssertion failed: !(handle->flags)',
+    )
+    expect(s).toBe('[ERROR] Failed to get upload URL: HTTP 403: Forbidden')
+  })
+
+  it('collapses multi-line plain text to one line', () => {
+    expect(summarizeGskFailure('first line\nsecond line')).toBe('first line second line')
+  })
+
+  it('clips a long plain message', () => {
+    const s = summarizeGskFailure('x'.repeat(400))
+    expect(s.length).toBe(301)
+    expect(s.endsWith('…')).toBe(true)
+  })
+
+  it('falls back on empty input and stringifies non-strings', () => {
+    expect(summarizeGskFailure(undefined)).toBe('unknown error')
+    expect(summarizeGskFailure(null, '')).toBe('')
+    expect(summarizeGskFailure(404)).toBe('404')
+  })
+
+  it('never returns an empty string when the page has no readable text', () => {
+    expect(summarizeGskFailure('HTTP 502: <html><body><script>x()</script></body></html>')).toBe(
+      'HTTP 502 (HTML error page)',
+    )
   })
 })

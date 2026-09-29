@@ -1,6 +1,8 @@
 import { chatAnthropic } from './protocols/anthropic'
 import { chatGemini } from './protocols/gemini'
 import { chatOpenAiCompatible } from './protocols/openai-compatible'
+import { ResponseBodyTooLargeError } from './protocols/shared'
+import { chatCodexAppServer } from './codex-app-server'
 import { getProviderAdapter, type ResolvedEndpoint } from './registry'
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog } from './watchdog'
@@ -16,7 +18,7 @@ export async function chatForProvider(
   // non-streaming: the server generates the full answer before the headers arrive,
   // so the connect phase gets the long budget; the body read then gets the idle budget
   const wd = createStreamWatchdog(signal, AI_CHAT_RESPONSE_TIMEOUT_MS)
-  return wd.guard(() => {
+  const result = wd.guard(() => {
     let endpoint: ResolvedEndpoint
     try {
       endpoint = getProviderAdapter(provider).resolveEndpoint(config)
@@ -27,16 +29,25 @@ export async function chatForProvider(
         error: e instanceof Error ? e.message : String(e),
       })
     }
+    if (endpoint.model) config = { ...config, model: endpoint.model }
     switch (endpoint.protocol) {
+      case 'codex-app-server':
+        return chatCodexAppServer(config, system, user, wd.signal)
       case 'anthropic':
         return chatAnthropic(wd, config, system, user, endpoint.baseUrl)
       case 'gemini':
-        return chatGemini(wd, config, system, user, endpoint.baseUrl)
+        return chatGemini(wd, config, system, user, endpoint.baseUrl, {
+          omitTemperature: endpoint.omitTemperature,
+        })
       case 'openai-compatible':
         return chatOpenAiCompatible(wd, endpoint.baseUrl, config, system, user, {
           omitTemperature: endpoint.omitTemperature,
           bodyExtras: endpoint.bodyExtras,
         })
     }
+  })
+  return result.catch((e) => {
+    if (e instanceof ResponseBodyTooLargeError) return { ok: false as const, error: e.message }
+    throw e
   })
 }

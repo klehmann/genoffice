@@ -128,7 +128,6 @@ export const ru = {
   appMoreItems: 'ещё +{count}…',
   appTruncationNote: 'Первые {shown} из {total}',
   appGoToButtonTitle: 'Переход (⌘G)',
-  appNameBoxTitle: 'Поле имени — введите адрес или имя и нажмите Ввод',
   appPivotChartHintIn: 'Создать сводную диаграмму из текущей сводной таблицы',
   appPivotChartHintOut:
     'Сначала выделите ячейку в области вывода сводной таблицы, затем выберите тип диаграммы',
@@ -288,6 +287,7 @@ export const ru = {
   appAiDone: 'ИИ завершил работу',
   appAiTurnLimit:
     '(Достигнут лимит раундов вызова инструментов для этого запроса; ответ выше основан на прочитанном и может быть неполным.)',
+  appAiTruncatedNote: '(Ответ был обрезан из-за ограничения длины и может быть неполным.)',
   appAiStopped: '(остановлено)',
   appAiNoSummary: 'ИИ завершил работу без сводки.',
   appAiNoAction:
@@ -308,16 +308,24 @@ export const ru = {
     'Эту комбинацию значков нельзя сохранить в xlsx — выберите другой набор значков.',
   appNeedFullLoadSort:
     'Сортировка, фильтрация, перемещение диапазонов и разбиение текста по столбцам требуют режима полной загрузки — эта книга слишком велика и загружается потоково частично.',
+  appFullLoadFilterTitle: 'Для фильтрации нужна полная загрузка',
+  appFullLoadFilterBody:
+    'Эта книга велика и загружена лишь частично (потоково). Для корректной фильтрации (включая подсчёт значений) нужны полные данные. Загрузить всю книгу сейчас?',
+  appFullLoadStart: 'Загрузить всё',
+  appFullLoadRunning: 'Идёт полная загрузка книги — фильтрация станет доступна после завершения…',
+  appFullLoadTooLarge:
+    'Книга слишком велика для полной загрузки в память; фильтрация для этого файла недоступна.',
+  appDialogCancel: 'Отмена',
   appPivotSheetNoMove:
     'Этот лист содержит сводную таблицу — перемещение диапазонов пока не поддерживается.',
+  appMergeOverTable:
+    'Выделение пересекается с таблицей Excel — объединение ячеек внутри таблицы пока не поддерживается.',
   appTableFilterNoEdit:
     'Фильтр этого листа принадлежит таблице Excel — его изменение пока нельзя сохранить.',
   appAutofillStreaming:
     'Автозаполнение в область, которая ещё загружается потоково, пока не разрешено.',
   appDvNeedsIndexed:
     'Для изменения проверки данных лист должен быть сначала полностью проиндексирован — повторите попытку чуть позже.',
-  appDuplicateNeedsFullLoad:
-    'Дублирование листа требует режима полной загрузки — эта книга слишком велика и загружается потоково частично.',
   appPivotSheetNoDuplicate:
     'Этот лист содержит сводную таблицу — его дублирование пока не поддерживается.',
   appDuplicateScopedNames:
@@ -493,6 +501,7 @@ export const ru = {
   appColumnLabel: 'Столбец {col}',
   appBridgeUnavailable: 'Мост файлов рабочего стола недоступен. Перезапустите приложение Electron.',
   appOpenCanceled: 'Выбор книги отменён.',
+  appOpeningWorkbook: 'Открытие книги…',
   appOpened: '{name} открыт — изменения ячеек сохраняются обратно с помощью ⌘S.',
   appOpenFailed: 'Не удаётся открыть книгу.',
   appPageSetupNeedsFile: 'Сначала откройте файл XLSX — параметры страницы сохраняются в файл.',
@@ -528,6 +537,12 @@ export const ru = {
   appPdfCanceled: 'Экспорт в PDF отменён.',
   appPdfExported: 'Экспортировано: {path}.',
   appPdfExportFailed: 'Не удаётся экспортировать PDF.',
+  appPrintPreparing: 'Подготовка к печати…',
+  appPrintSent: 'Отправлено на принтер.',
+  appPrintCanceled: 'Печать отменена.',
+  appPrintFailed: 'Не удалось напечатать.',
+  appPrintNeedsFullLoad:
+    'Для печати книга должна быть полностью загружена — дождитесь окончания загрузки.',
   appCsvExportNeedsFullLoad:
     'Экспорт в CSV требует полностью загруженной книги — дождитесь завершения загрузки.',
   appCsvExportTooLarge: 'Лист слишком большой для экспорта в CSV.',
@@ -565,6 +580,8 @@ export const ru = {
     'Изменения определённых имён нельзя сохранить вместе с изменениями строк/столбцов или структуры листов — сохраните в два приёма.',
   appSaveErrChangedOnDisk:
     'Файл на диске был изменён другой программой — сохранение прервано; откройте файл заново и повторите попытку.',
+  appSaveErrTargetLocked:
+    'Не удалось заменить файл — похоже, он заблокирован другой программой (открыт в Excel или сканируется/синхронизируется). Закройте его и сохраните снова.',
   appSaveErrStylesheetLimited:
     'В таблице стилей этой книги нет базовой структуры, изменения стилей сохранить нельзя.',
   appSaveErrPackageGuard:
@@ -622,6 +639,9 @@ export const ru = {
     'Книга полностью загружена — формулы пересчитываются вживую, строки и столбцы доступны для редактирования.',
   appRangeMustBeVector: '{range} должен быть одной строкой или одним столбцом ячеек.',
   appRangeTooManyCells: '{range} охватывает более {max} ячеек.',
+  appCopyLoadingRange: 'Загрузка {range} для копирования…',
+  appCopyValuesOnly:
+    '{range} скопирован только как значения ({cells} ячеек): стили сохраняются только до {max} ячеек.',
   appSheetStillIndexing: 'Лист ещё индексируется — повторите попытку чуть позже.',
   appPrintNothing: 'На листе нечего печатать.',
   appPrintTooLarge:
@@ -657,6 +677,8 @@ export const ru = {
   appTabFormulas: 'Формулы',
   appTabData: 'Данные',
   appTabReview: 'Рецензирование',
+  appRibbonCollapse: 'Свернуть ленту',
+  appRibbonExpand: 'Развернуть ленту',
   appTabView: 'Вид',
   appTabAi: 'ИИ',
   appTabChartDesign: 'Конструктор диаграмм',
@@ -1198,6 +1220,15 @@ export const ru = {
   appResetZoom: 'Сбросить масштаб',
   appZoomToSelection: 'Масштаб по выделенному',
   appZoomToSelectionDetail: 'По размеру выделения',
+  appStatAverage: 'Среднее',
+  appStatCount: 'Количество',
+  appStatNumericalCount: 'Количество чисел',
+  appStatMin: 'Минимум',
+  appStatMax: 'Максимум',
+  appStatSum: 'Сумма',
+  appZoomLevel: 'Масштаб',
+  appNormalViewTip: 'Обычный режим',
+  appPageBreakPreviewTip: 'Режим разрывов страниц',
   appGroupWindow: 'Окно',
   appFreezePanes: 'Закрепить области',
   appFreezeTitle: 'Закрепить строки и столбцы',
@@ -1241,6 +1272,9 @@ export const ru = {
   appCutTitle: 'Вырезать ⌘X',
   appCopyTitle: 'Копировать ⌘C',
   appFormatPainter: 'Формат по образцу',
+  appFormatPainterTip: 'Формат по образцу — двойной щелчок удерживает режим до Esc',
+  appFormatPainterLocked:
+    'Формат по образцу закреплён — выделяйте диапазоны для применения; Esc или щелчок по кнопке завершает.',
   appGroupFont: 'Шрифт',
   appIncreaseFontSize: 'Увеличить размер шрифта',
   appDecreaseFontSize: 'Уменьшить размер шрифта',
@@ -1315,6 +1349,8 @@ export const ru = {
   appFormatMenu: 'Формат',
   appRowHeight: 'Высота строки',
   appColWidth: 'Ширина столбца',
+  appAutoFitRowHeight: 'Автоподбор высоты строки',
+  appAutoFitColWidth: 'Автоподбор ширины столбца',
   appRowHeightLabel: 'Высота строки (пункты)',
   appColWidthLabel: 'Ширина столбца (символы)',
   appDeleteRow: 'Удалить строку',
@@ -1331,4 +1367,6 @@ export const ru = {
   appFindTitle: 'Найти и выделить ⌘F',
   appReplace: 'Заменить',
   appGoTo: 'Перейти',
+  appInsertCells: 'Вставить ячейки…',
+  appDeleteCells: 'Удалить ячейки…',
 } satisfies Record<keyof typeof zh, string>

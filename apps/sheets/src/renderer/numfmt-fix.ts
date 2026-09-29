@@ -17,6 +17,7 @@
  */
 import {
   CellValueType,
+  type ICellData,
   InterceptorEffectEnum,
   isDefaultFormat,
   numfmt,
@@ -60,7 +61,9 @@ export function formatGeneral(value: number, budget: number): string {
   if (base.length <= budget) return base
   const abs = Math.abs(value)
   const intLen = (abs < 1 ? 1 : Math.floor(Math.log10(abs)) + 1) + (value < 0 ? 1 : 0)
-  for (let dec = Math.min(budget - intLen - 1, 10); dec >= 0; dec -= 1) {
+  // Start at 0 when the integer part fills the budget exactly: 712288 in a
+  // 6-char column is shown, not 7E+05.
+  for (let dec = Math.max(0, Math.min(budget - intLen - 1, 10)); dec >= 0; dec -= 1) {
     let t = value.toFixed(dec)
     if (t.includes('.')) t = t.replace(/0+$/, '').replace(/\.$/, '')
     if (Number(t) === 0 && value !== 0) break
@@ -73,12 +76,50 @@ export function formatGeneral(value: number, budget: number): string {
   return toScientific(value, 0)
 }
 
+const CURRENCY_LCID_TAG = /\[\$([^\]-]+)-[^\]]*\]/g
+const EMPTY_CURRENCY_TAG = /\[\$\]/g
+
+/// Excel accepts `[$]` (no symbol, no locale) as a token that prints
+/// nothing; numfmt rejects the pattern and returns its `######` error text.
+function dropEmptyCurrency(pattern: string): string {
+  return pattern.replace(EMPTY_CURRENCY_TAG, '')
+}
+
+/**
+ * `[$sym-LCID]` picks the currency symbol only; Excel keeps the thousands
+ * and decimal separators of the host locale (an EN machine prints
+ * `R$ 62,175` for `[$R$-416]`). numfmt lets the tag's locale override the
+ * `locale` option, so drop the LCID and keep the symbol. Bare `[$-LCID]`
+ * tags and date patterns keep theirs: the locale legitimately picks the
+ * month/day names there.
+ */
+export function hostLocalePattern(pattern: string): string {
+  const base = dropEmptyCurrency(pattern)
+  const stripped = base.replace(CURRENCY_LCID_TAG, '[$$$1]')
+  if (stripped === base) return base
+  const type = patternType(base)
+  if (type === 'date' || type === 'datetime' || type === 'time') return base
+  return stripped
+}
+
 function safeFormat(pattern: string, value: number | string): string | null {
   try {
-    return numfmt.format(pattern, value, { nbsp: true, throws: false })
+    return numfmt.format(hostLocalePattern(pattern), value, { nbsp: true, throws: false })
   } catch {
     return null
   }
+}
+
+/// Marker on `cell.custom` for a numeric cell whose shrinkToFit was baked
+/// into the font size at load: the #### rule stands down (Excel shrinks the
+/// formatted number instead of hashing it).
+export const SHRINK_TO_FIT_KEY = 'shrinkToFit'
+
+/// The text a numeric cell will display, for width measurement at load
+/// time (before the NUMFMT interceptor has run).
+export function formatForMeasure(pattern: string | undefined, value: number): string {
+  if (pattern === undefined || isDefaultFormat(pattern)) return String(value)
+  return safeFormat(pattern, value) ?? String(value)
 }
 
 const formatInfoCache = new Map<string, { type: string; maxDecimals: number; scale: number }>()
@@ -322,7 +363,7 @@ export function isCalendarDatePattern(pattern: string): boolean {
   let isDate = datePatternCache.get(pattern)
   if (isDate === undefined) {
     try {
-      const type = (numfmt.getFormatInfo(pattern) as { type?: string }).type
+      const type = (numfmt.getFormatInfo(dropEmptyCurrency(pattern)) as { type?: string }).type
       isDate = type === 'date' || type === 'datetime'
     } catch {
       isDate = false
@@ -338,7 +379,8 @@ function patternType(pattern: string): string {
   let type = patternTypeCache.get(pattern)
   if (type === undefined) {
     try {
-      type = (numfmt.getFormatInfo(pattern) as { type?: string }).type ?? 'unknown'
+      type =
+        (numfmt.getFormatInfo(dropEmptyCurrency(pattern)) as { type?: string }).type ?? 'unknown'
     } catch {
       type = 'unknown'
     }
@@ -448,6 +490,12 @@ export const EXCEL_DIGIT_PER_PT: Record<string, number> = {
   'MS PMincho': 8 / 11,
   'ＭＳ 明朝': 8 / 11,
   'MS Mincho': 8 / 11,
+  // Meiryo digits are 0.621em (Verdana design) → 9.1px at 11pt; the ja prod
+  // ref grid (B:H) fits MDW 9, while the CJK-name fallback's 8
+  // narrows every column 11%. Meiryo UI keeps the same Latin advances.
+  メイリオ: 9 / 11,
+  Meiryo: 9 / 11,
+  'Meiryo UI': 9 / 11,
   // GB/Big5 legacy faces share the em/2 digit advance.
   宋体: 8 / 11,
   SimSun: 8 / 11,
@@ -560,10 +608,11 @@ export function excelWidthScale(
  * Returns the corrected display text, or null to leave the cell alone.
  */
 export function fixFormattedValue(
-  pattern: string,
+  rawPattern: string,
   raw: string | number,
   displayed: string | number | boolean | undefined,
 ): string | null {
+  const pattern = dropEmptyCurrency(rawPattern)
   if (typeof raw === 'string') {
     // Excel applies number formats to numbers only, but Univer's NUMFMT
     // coerces numeric-looking text (checkCellValueType lets isRealNum win
@@ -599,6 +648,8 @@ export function fixFormattedValue(
   ) {
     return text
   }
+  // Univer formatted with the LCID's separators (or rejected `[$]`); ours follow the host locale.
+  if (hostLocalePattern(rawPattern) !== rawPattern && text !== String(displayed ?? '')) return text
   return null
 }
 
@@ -637,6 +688,14 @@ export function yenLiteralDisplay(
   return displayed.replaceAll('\\', '¥')
 }
 
+/// Display text of a value Excel never clips or overflows (booleans and
+/// error literals); null for numbers and text.
+export function nonTextDisplayLabel(cell: Pick<ICellData, 'v' | 't'>): string | null {
+  if (cell.t === CellValueType.BOOLEAN) return cell.v === 0 || cell.v === false ? 'FALSE' : 'TRUE'
+  if (typeof cell.v === 'string' && ERROR_TYPE_SET.has(cell.v as ErrorType)) return cell.v
+  return null
+}
+
 export function installNumberFormatFix(
   runtime: UniverRuntime,
   isDate1904?: () => boolean,
@@ -672,10 +731,12 @@ export function installNumberFormatFix(
     effect: InterceptorEffectEnum.Value,
     handler: (cell, location, next) => {
       if (!cell || cell.p != null) return next(cell)
-      if (cell.t === CellValueType.BOOLEAN) {
-        // Excel hashes a too-wide TRUE/FALSE like any non-text value — a
-        // logical never clips (ref prints ### for Arial FALSE in a 32px
-        // column). Univer stores the label as 0/1.
+      const nonTextLabel = nonTextDisplayLabel(cell)
+      if (nonTextLabel !== null) {
+        // Excel hashes a too-wide TRUE/FALSE or #REF! like any non-text
+        // value — a logical never clips (ref prints ### for Arial FALSE in a
+        // 32px column) and an error never spills into its neighbours.
+        // Univer stores the logical label as 0/1 and errors as text.
         const style = location.workbook.getStyles().getStyleByCell(cell)
         if (
           style?.tb !== WrapStrategy.WRAP &&
@@ -686,7 +747,7 @@ export function installNumberFormatFix(
           const fontString = getFontStyleString(style ?? undefined).fontString
           const measure = (text: string) => FontCache.getMeasureText(text, fontString).width
           const hashes = overflowHashes(
-            cell.v === 0 || cell.v === false ? 'FALSE' : 'TRUE',
+            nonTextLabel,
             location.worksheet.getColumnWidth(location.col),
             measure,
             excelWidthScale(style?.ff ?? undefined, style?.fs ?? 11, () => measure('0')),
@@ -754,6 +815,7 @@ export function installNumberFormatFix(
         const type = patternType(patternUsed)
         if (type === 'text' || type === 'unknown') return outCell
         if (style?.tb === WrapStrategy.WRAP || style?.tr?.a || style?.tr?.v) return outCell
+        if (location.rawData?.custom?.[SHRINK_TO_FIT_KEY] === true) return outCell
         const fontString = getFontStyleString(style ?? undefined).fontString
         const measure = (text: string) => FontCache.getMeasureText(text, fontString).width
         const width =

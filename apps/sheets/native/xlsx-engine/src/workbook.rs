@@ -1,25 +1,8 @@
-//! Workbook-level parts: archive validation, sheet declarations and
-//! relationships, `<dimension>` / sheet-view scans, the shared-string table
-//! and workbook defined names.
+//! Workbook-level parts: sheet declarations and relationships,
+//! `<dimension>` / sheet-view scans, the shared-string table and workbook
+//! defined names.
 
 use super::*;
-
-pub(crate) fn validate_archive(archive: &mut ZipArchive<File>) -> Result<(), SidecarError> {
-    if archive.len() > MAX_ENTRY_COUNT {
-        return Err(SidecarError::Workbook(
-            "Workbook contains too many ZIP entries.".into(),
-        ));
-    }
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index)?;
-        if entry.enclosed_name().is_none() {
-            return Err(SidecarError::Workbook(
-                "Workbook contains an unsafe ZIP path.".into(),
-            ));
-        }
-    }
-    Ok(())
-}
 
 pub(crate) fn read_sheet_declarations(
     archive: &mut ZipArchive<File>,
@@ -120,31 +103,13 @@ pub(crate) fn read_workbook_relationships(
     Ok(relationships)
 }
 
-// Pure string handling: zip entry names always use '/', while PathBuf joins
-// with '\' on Windows, which made by_name miss every worksheet there.
 pub(crate) fn normalize_worksheet_path(target: &str) -> Result<String, SidecarError> {
-    let candidate = if let Some(absolute) = target.strip_prefix('/') {
-        absolute.to_owned()
-    } else if target.starts_with("xl/") {
-        target.to_owned()
-    } else {
-        format!("xl/{}", target.trim_start_matches("./"))
-    };
-    let mut normalized: Vec<&str> = Vec::new();
-    for component in candidate.split('/') {
-        match component {
-            "" | "." => {}
-            ".." => {
-                if normalized.pop().is_none() {
-                    return Err(SidecarError::Workbook(
-                        "Worksheet relationship escapes the package.".into(),
-                    ));
-                }
-            }
-            value => normalized.push(value),
-        }
-    }
-    Ok(normalized.join("/"))
+    let target = target.trim();
+    let target = target
+        .strip_prefix("xl/")
+        .or_else(|| target.strip_prefix("xl\\"))
+        .unwrap_or(target);
+    crate::archive::resolve_relationship_target("xl/workbook.xml", target)
 }
 
 pub(crate) struct SheetDimensions {
@@ -340,9 +305,14 @@ pub(crate) fn read_sheet_dimensions(
                     // producers emitting A1 or A1:G1). Small dimensions can be
                     // stale too (tdf113271 declares A1:F5 over 462 rows) and
                     // are cheap to verify — trust only refs large enough that
-                    // scanning them would cost real time.
+                    // scanning them would cost real time. A ref reaching the
+                    // sheet's last column or row (A1:XFD32, Yozo) declares the
+                    // whole sheet, not the used range.
                     && dimensions.is_some_and(|(rows, columns)| {
-                        rows > 1 && columns > 1 && rows * columns >= DIMENSION_TRUST_CELLS
+                        rows > 1
+                            && columns > 1
+                            && !spans_full_axis(rows, columns)
+                            && rows * columns >= DIMENSION_TRUST_CELLS
                     }) =>
             {
                 let (row_count, column_count) = dimensions.unwrap_or((1, 1));
@@ -389,8 +359,8 @@ pub(crate) fn read_sheet_dimensions(
             Event::Eof => {
                 let (dim_rows, dim_columns) = dimensions.unwrap_or((0, 0));
                 let (row_count, column_count) = (
-                    dim_rows.max(maximum_row + 1),
-                    dim_columns.max(maximum_column + 1),
+                    declared_extent(dim_rows, SHEET_MAX_ROWS).max(maximum_row + 1),
+                    declared_extent(dim_columns, SHEET_MAX_COLUMNS).max(maximum_column + 1),
                 );
                 return Ok(SheetDimensions {
                     row_count,
@@ -416,6 +386,18 @@ pub(crate) fn read_sheet_dimensions(
 }
 
 pub(crate) const DIMENSION_TRUST_CELLS: usize = 10_000;
+pub(crate) const SHEET_MAX_ROWS: usize = 1_048_576;
+pub(crate) const SHEET_MAX_COLUMNS: usize = 16_384;
+
+/// A declared extent reaching the sheet's last row/column means "whole
+/// sheet", not a used range; only the measured cells count then.
+fn declared_extent(declared: usize, sheet_max: usize) -> usize {
+    if declared >= sheet_max { 0 } else { declared }
+}
+
+fn spans_full_axis(rows: usize, columns: usize) -> bool {
+    rows >= SHEET_MAX_ROWS || columns >= SHEET_MAX_COLUMNS
+}
 
 pub(crate) fn dimensions_from_reference(reference: &str) -> Result<(usize, usize), SidecarError> {
     let last = reference
@@ -441,6 +423,8 @@ pub(crate) fn read_shared_strings(
     let mut runs: Vec<RichRun> = Vec::new();
     let mut current_run: Option<RichRun> = None;
     let mut in_text = false;
+    let mut text_preserve = false;
+    let mut text_node = String::new();
     let mut in_phonetic = false;
     loop {
         match reader.read_event_into(&mut buffer)? {
@@ -463,35 +447,32 @@ pub(crate) fn read_shared_strings(
             Event::Start(element) | Event::Empty(element) if current_run.is_some() => {
                 if element.local_name().as_ref() == b"t" {
                     in_text = true;
+                    text_preserve = preserves_space(&reader, &element)?;
+                    text_node.clear();
                 } else if let Some(run) = current_run.as_mut() {
                     apply_run_property(run, &reader, &element, colors)?;
                 }
             }
             Event::Start(element) if element.local_name().as_ref() == b"t" => {
                 in_text = !in_phonetic;
+                text_preserve = preserves_space(&reader, &element)?;
+                text_node.clear();
             }
-            Event::Text(text) if in_text => {
-                let decoded = decode_text(&text)?;
-                current.push_str(&decoded);
-                if let Some(run) = &mut current_run {
-                    run.text.push_str(&decoded);
-                }
-            }
-            Event::CData(text) if in_text => {
-                let decoded = decode_cdata(&text)?;
-                current.push_str(&decoded);
-                if let Some(run) = &mut current_run {
-                    run.text.push_str(&decoded);
-                }
-            }
+            Event::Text(text) if in_text => text_node.push_str(&decode_text(&text)?),
+            Event::CData(text) if in_text => text_node.push_str(&decode_cdata(&text)?),
             Event::GeneralRef(reference) if in_text => {
-                let decoded = general_ref_text(&reference)?;
-                current.push_str(&decoded);
-                if let Some(run) = &mut current_run {
-                    run.text.push_str(&decoded);
-                }
+                text_node.push_str(&general_ref_text(&reference)?);
             }
-            Event::End(element) if element.local_name().as_ref() == b"t" => in_text = false,
+            Event::End(element) if element.local_name().as_ref() == b"t" => {
+                if in_text {
+                    let text = text_node_content(std::mem::take(&mut text_node), text_preserve);
+                    current.push_str(&text);
+                    if let Some(run) = &mut current_run {
+                        run.text.push_str(&text);
+                    }
+                }
+                in_text = false;
+            }
             Event::End(element) if element.local_name().as_ref() == b"r" => {
                 if let Some(run) = current_run.take() {
                     runs.push(run);
@@ -500,10 +481,10 @@ pub(crate) fn read_shared_strings(
             Event::End(element) if element.local_name().as_ref() == b"si" => {
                 let mut finished = std::mem::take(&mut runs);
                 for run in &mut finished {
-                    normalize_line_endings(&mut run.text);
+                    normalize_cell_text(&mut run.text);
                 }
                 let mut text = current.clone();
-                normalize_line_endings(&mut text);
+                normalize_cell_text(&mut text);
                 strings.push(SharedString {
                     text,
                     runs: qualify_runs(finished),

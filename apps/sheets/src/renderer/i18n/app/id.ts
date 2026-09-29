@@ -129,7 +129,6 @@ export const id = {
   appMoreItems: '+{count} lagi…',
   appTruncationNote: '{shown} pertama dari {total}',
   appGoToButtonTitle: 'Buka (Go To, ⌘G)',
-  appNameBoxTitle: 'Kotak Nama — ketik alamat atau nama, lalu tekan Enter',
   appPivotChartHintIn: 'Buat PivotChart dari PivotTable saat ini',
   appPivotChartHintOut:
     'Pilih dahulu sel di dalam area keluaran PivotTable, lalu pilih jenis bagan',
@@ -284,6 +283,7 @@ export const id = {
   appAiDone: 'AI selesai',
   appAiTurnLimit:
     '(Batas putaran panggilan alat untuk permintaan ini tercapai; jawaban di atas berdasarkan yang sudah dibaca dan mungkin tidak lengkap.)',
+  appAiTruncatedNote: '(Balasan terpotong karena batas panjang dan mungkin tidak lengkap.)',
   appAiStopped: '(dihentikan)',
   appAiNoSummary: 'AI selesai tanpa menghasilkan ringkasan.',
   appAiNoAction:
@@ -301,13 +301,21 @@ export const id = {
   appIconSetUnsupported: 'Kombinasi ikon ini tidak dapat disimpan ke xlsx — pilih set ikon lain.',
   appNeedFullLoadSort:
     'Mengurutkan, memfilter, memindahkan rentang, dan memisahkan teks ke kolom memerlukan mode muat penuh — buku kerja ini terlalu besar dan dimuat sebagian secara streaming.',
+  appFullLoadFilterTitle: 'Filter memerlukan pemuatan penuh',
+  appFullLoadFilterBody:
+    'Buku kerja ini besar dan baru dimuat sebagian secara streaming. Filter (termasuk hitungan nilai) memerlukan data lengkap agar benar. Muat seluruh buku kerja sekarang?',
+  appFullLoadStart: 'Muat semua',
+  appFullLoadRunning: 'Memuat seluruh buku kerja — filter tersedia setelah selesai…',
+  appFullLoadTooLarge:
+    'Buku kerja ini terlalu besar untuk dimuat sepenuhnya ke memori; filter tidak tersedia untuk file ini.',
+  appDialogCancel: 'Batal',
   appPivotSheetNoMove: 'Lembar ini berisi PivotTable — memindahkan rentang belum didukung.',
+  appMergeOverTable:
+    'Pilihan tumpang tindih dengan tabel Excel — menggabungkan sel di dalam tabel belum didukung.',
   appTableFilterNoEdit: 'Filter lembar ini milik tabel Excel — pengeditannya belum dapat disimpan.',
   appAutofillStreaming: 'IsiOtomatis ke area yang masih dimuat secara streaming belum diizinkan.',
   appDvNeedsIndexed:
     'Mengedit validasi data memerlukan lembar ini terindeks penuh dahulu — coba lagi sebentar lagi.',
-  appDuplicateNeedsFullLoad:
-    'Menduplikasi lembar memerlukan mode muat penuh — buku kerja ini terlalu besar dan dimuat sebagian secara streaming.',
   appPivotSheetNoDuplicate: 'Lembar ini berisi PivotTable — menduplikasinya belum didukung.',
   appDuplicateScopedNames:
     'Lembar ini memiliki nama terdefinisi berlingkup lembar — menduplikasinya belum didukung.',
@@ -480,6 +488,7 @@ export const id = {
   appColumnLabel: 'Kolom {col}',
   appBridgeUnavailable: 'Jembatan file desktop tidak tersedia. Mulai ulang aplikasi Electron.',
   appOpenCanceled: 'Pemilihan buku kerja dibatalkan.',
+  appOpeningWorkbook: 'Membuka buku kerja…',
   appOpened: '{name} dibuka — pengeditan sel disimpan kembali dengan ⌘S.',
   appOpenFailed: 'Tidak dapat membuka buku kerja.',
   appPageSetupNeedsFile: 'Buka file XLSX dahulu — pengaturan halaman disimpan ke file.',
@@ -514,6 +523,12 @@ export const id = {
   appPdfCanceled: 'Ekspor PDF dibatalkan.',
   appPdfExported: '{path} diekspor.',
   appPdfExportFailed: 'Tidak dapat mengekspor PDF.',
+  appPrintPreparing: 'Menyiapkan pencetakan…',
+  appPrintSent: 'Dikirim ke printer.',
+  appPrintCanceled: 'Pencetakan dibatalkan.',
+  appPrintFailed: 'Tidak dapat mencetak.',
+  appPrintNeedsFullLoad:
+    'Pencetakan memerlukan buku kerja termuat sepenuhnya — tunggu hingga pemuatan selesai.',
   appCsvExportNeedsFullLoad:
     'Ekspor CSV memerlukan buku kerja termuat penuh — tunggu pemuatan selesai.',
   appCsvExportTooLarge: 'Lembar terlalu besar untuk diekspor sebagai CSV.',
@@ -550,6 +565,8 @@ export const id = {
     'Perubahan nama yang ditentukan tidak dapat disimpan bersama perubahan baris/kolom atau struktur sheet — simpan dalam dua tahap.',
   appSaveErrChangedOnDisk:
     'File diubah di disk oleh program lain — penyimpanan dibatalkan; buka kembali file lalu coba lagi.',
+  appSaveErrTargetLocked:
+    'File tidak dapat diganti — tampaknya terkunci oleh program lain (terbuka di Excel, atau sedang dipindai/disinkronkan). Tutup di sana lalu simpan lagi.',
   appSaveErrStylesheetLimited:
     'Stylesheet buku kerja ini tidak memiliki struktur dasar, jadi perubahan gaya tidak dapat disimpan.',
   appSaveErrPackageGuard:
@@ -604,6 +621,9 @@ export const id = {
     'Buku kerja termuat penuh — rumus dihitung ulang secara langsung, baris/kolom dapat diedit.',
   appRangeMustBeVector: '{range} harus berupa satu baris atau satu kolom sel.',
   appRangeTooManyCells: '{range} mencakup lebih dari {max} sel.',
+  appCopyLoadingRange: 'Memuat {range} untuk disalin…',
+  appCopyValuesOnly:
+    '{range} disalin sebagai nilai saja ({cells} sel): gaya hanya dipertahankan hingga {max} sel.',
   appSheetStillIndexing: 'Lembar masih diindeks — coba lagi sebentar lagi.',
   appPrintNothing: 'Lembar ini tidak memiliki apa pun untuk dicetak.',
   appPrintTooLarge:
@@ -639,6 +659,8 @@ export const id = {
   appTabFormulas: 'Rumus',
   appTabData: 'Data',
   appTabReview: 'Tinjau',
+  appRibbonCollapse: 'Ciutkan Pita',
+  appRibbonExpand: 'Perluas Pita',
   appTabView: 'Tampilan',
   appTabAi: 'AI',
   appTabChartDesign: 'Desain Bagan',
@@ -1180,6 +1202,15 @@ export const id = {
   appResetZoom: 'Atur ulang zoom',
   appZoomToSelection: 'Zoom ke Pilihan',
   appZoomToSelectionDetail: 'Paskan ke pilihan',
+  appStatAverage: 'Rata-rata',
+  appStatCount: 'Jumlah data',
+  appStatNumericalCount: 'Jumlah angka',
+  appStatMin: 'Minimum',
+  appStatMax: 'Maksimum',
+  appStatSum: 'Total',
+  appZoomLevel: 'Tingkat zoom',
+  appNormalViewTip: 'Tampilan normal',
+  appPageBreakPreviewTip: 'Pratinjau pemisah halaman',
   appGroupWindow: 'Jendela',
   appFreezePanes: 'Bekukan Panel',
   appFreezeTitle: 'Bekukan baris dan kolom',
@@ -1223,6 +1254,9 @@ export const id = {
   appCutTitle: 'Potong ⌘X',
   appCopyTitle: 'Salin ⌘C',
   appFormatPainter: 'Penyalin Format',
+  appFormatPainterTip: 'Penyalin Format — klik dua kali agar tetap aktif hingga Esc',
+  appFormatPainterLocked:
+    'Penyalin Format terkunci — pilih rentang untuk diterapkan; Esc atau klik tombol untuk berhenti.',
   appGroupFont: 'Font',
   appIncreaseFontSize: 'Perbesar ukuran font',
   appDecreaseFontSize: 'Perkecil ukuran font',
@@ -1297,6 +1331,8 @@ export const id = {
   appFormatMenu: 'Format',
   appRowHeight: 'Tinggi baris',
   appColWidth: 'Lebar kolom',
+  appAutoFitRowHeight: 'Sesuaikan Tinggi Baris Otomatis',
+  appAutoFitColWidth: 'Sesuaikan Lebar Kolom Otomatis',
   appRowHeightLabel: 'Tinggi baris (poin)',
   appColWidthLabel: 'Lebar kolom (karakter)',
   appDeleteRow: 'Hapus baris',
@@ -1313,4 +1349,6 @@ export const id = {
   appFindTitle: 'Temukan & Pilih ⌘F',
   appReplace: 'Ganti',
   appGoTo: 'Buka',
+  appInsertCells: 'Sisipkan Sel…',
+  appDeleteCells: 'Hapus Sel…',
 } satisfies Record<keyof typeof zh, string>

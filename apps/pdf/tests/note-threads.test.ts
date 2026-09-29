@@ -4,8 +4,10 @@ import {
   findThreadRoot,
   flattenThread,
   parsePdfDate,
+  savedNoteKey,
   threadSubtree,
   toSavedNote,
+  visibleNoteThreads,
 } from '../src/renderer/note-threads'
 import type { NoteInput, PdfJsAnnotData, SavedNoteAnnot } from '../src/renderer/note-threads'
 
@@ -50,6 +52,15 @@ describe('parsePdfDate', () => {
     expect(parsePdfDate(undefined)).toBeNull()
     expect(parsePdfDate('yesterday')).toBeNull()
     expect(parsePdfDate('D:20261399')).toBeNull()
+  })
+
+  it('rejects a day the month does not have instead of rolling it into the next month', () => {
+    // D:20240231000000 used to normalise to 2024-03-02, dating the note two days late
+    expect(parsePdfDate('D:20240231000000')).toBeNull()
+    expect(parsePdfDate('D:20240431000000')).toBeNull() // April has 30
+    expect(parsePdfDate('D:20230229000000')).toBeNull() // 2023 is not a leap year
+    expect(parsePdfDate('D:20240131Z')).toBe(Date.UTC(2024, 0, 31))
+    expect(parsePdfDate('D:20240229Z')).toBe(Date.UTC(2024, 1, 29))
   })
 })
 
@@ -114,6 +125,30 @@ describe('buildNoteThreads', () => {
     expect(new Set(seen).size).toBe(2)
   })
 
+  it('handles a deeply nested reply chain without overflowing the stack', () => {
+    // Chromium's renderer stack is far smaller than Node's, so a chain that
+    // merely loads would throw a RangeError mid-render and unmount the margin.
+    const DEPTH = 20_000
+    const notes: SavedNoteAnnot[] = []
+    for (let i = 1; i <= DEPTH; i++) {
+      notes.push(
+        saved({
+          objNum: i,
+          contents: `note ${i}`,
+          timeMs: i,
+          inReplyTo: i === 1 ? null : i - 1,
+        }),
+      )
+    }
+
+    const roots = buildNoteThreads(notes, [])
+    const flat = flattenThread(roots[0]!)
+
+    expect(flat).toHaveLength(DEPTH)
+    expect(flat[DEPTH - 1]!.depth).toBe(DEPTH - 1)
+    expect(findThreadRoot(roots, savedNoteKey(DEPTH))).toBe(roots[0])
+  })
+
   it('attaches pending replies to saved parents and to pending parents', () => {
     const roots = buildNoteThreads(
       [saved({ objNum: 7 })],
@@ -146,5 +181,14 @@ describe('buildNoteThreads', () => {
     const roots = buildNoteThreads([saved({ objNum: 1 }), saved({ objNum: 2, inReplyTo: 1 })], [])
     expect(findThreadRoot(roots, 'S2')?.key).toBe('S1')
     expect(findThreadRoot(roots, 'S99')).toBeNull()
+  })
+
+  it('visibleNoteThreads hides notes queued for deletion and overlays pending edits', () => {
+    const notes = [saved({ objNum: 1 }), saved({ objNum: 2, contents: 'other' })]
+    const roots = visibleNoteThreads(notes, [pending('x')], new Set([1]), new Map([[2, 'fixed']]))
+    expect(roots.map((r) => r.key)).toEqual(['S2', 'Px'])
+    expect(roots[0]!.contents).toBe('fixed')
+    expect(roots[0]!.saved?.contents).toBe('other')
+    expect(findThreadRoot(roots, 'S1')).toBeNull()
   })
 })

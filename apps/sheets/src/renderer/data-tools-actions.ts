@@ -6,8 +6,12 @@
  */
 import { ILayoutService } from '@univerjs/preset-sheets-core'
 
-import { columnLabel } from '../domain/cell-address'
-import { decodeCsvBuffer, isNumericCell, parseCsv } from '../gateway/csv-import'
+import { columnLabel } from '@genoffice/xlsx-gateway/domain/cell-address'
+import {
+  decodeCsvBuffer,
+  isNumericCell,
+  parseCsv,
+} from '@genoffice/xlsx-gateway/gateway/csv-import'
 import type { AdvancedFilterColumn, AdvancedFilterCriteria } from './AdvancedFilterDialog'
 import {
   buildLabelMatrix,
@@ -22,6 +26,7 @@ import { isSheetRemoved, journalSize, recordStructuralOp } from './edit-journal'
 import { resolveGoToRef, type GoToNameEntry } from './goto'
 import { getLang, t } from './i18n/locale'
 import { appendSymbol } from './SymbolDialog'
+import { inferContinuousRegion } from './table-actions'
 import {
   a1RangeRef,
   a1RowRangeRef,
@@ -71,9 +76,12 @@ export function handleImportCsv(ctx: DataToolsContext): void {
       ctx.setMessage(t('appCsvTooLarge'))
       return
     }
-    void file.arrayBuffer().then((buffer) => {
-      importCsvText(ctx, decodeCsvBuffer(new Uint8Array(buffer), CSV_CHARSET_BY_LANG[getLang()]))
-    })
+    void file
+      .arrayBuffer()
+      .then((buffer) => {
+        importCsvText(ctx, decodeCsvBuffer(new Uint8Array(buffer), CSV_CHARSET_BY_LANG[getLang()]))
+      })
+      .catch(() => ctx.setMessage(t('appCsvTooLarge')))
   }
   input.click()
 }
@@ -198,8 +206,12 @@ export function handleApplyFormula(ctx: DataToolsContext, formula: string): stri
   if (!workbook || !worksheet || !range) return t('appSelectCellFirst')
   const trimmed = formula.trim()
   if (!trimmed.startsWith('=')) return t('appFormulaStartsEquals')
-  const opens = (trimmed.match(/\(/g) ?? []).length
-  const closes = (trimmed.match(/\)/g) ?? []).length
+  // Count the parens outside literals only: a paren inside "..." or a quoted
+  // sheet name is text, so counting it rejected valid formulas such as
+  // =LEN("a)b"). Same blanking pass cf-formula-fold.ts uses before scanning.
+  const bare = trimmed.replace(/"(?:[^"]|"")*"/g, '""').replace(/'(?:[^']|'')*'!?/g, '')
+  const opens = (bare.match(/\(/g) ?? []).length
+  const closes = (bare.match(/\)/g) ?? []).length
   if (opens !== closes) return t('appUnbalancedParens')
   try {
     worksheet.getRange(range.getRow(), range.getColumn(), 1, 1).setValue({ f: trimmed })
@@ -637,10 +649,20 @@ export function handleFormatAsTable(ctx: DataToolsContext, style: string): void 
   }
   const sheetId = worksheet.getSheetId()
   if (isSheetRemoved(state.editJournal, sheetId)) return
-  const startRow = range.getRow()
-  const startColumn = range.getColumn()
-  const endRow = startRow + range.getHeight() - 1
-  const endColumn = startColumn + range.getWidth() - 1
+  let startRow = range.getRow()
+  let startColumn = range.getColumn()
+  let endRow = startRow + range.getHeight() - 1
+  let endColumn = startColumn + range.getWidth() - 1
+  // fixes #298: single-cell selection → infer continuous region (Excel CurrentRegion)
+  if (range.getHeight() === 1 && range.getWidth() === 1) {
+    const inferred = inferContinuousRegion(worksheet, startRow, startColumn)
+    if (inferred) {
+      startRow = inferred.startRow
+      startColumn = inferred.startColumn
+      endRow = inferred.endRow
+      endColumn = inferred.endColumn
+    }
+  }
   try {
     applyAiTableAdd(runtime, state, {
       op: 'add_table',

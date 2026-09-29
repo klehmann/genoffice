@@ -133,7 +133,6 @@ export const pt = {
   appMoreItems: '+{count} itens…',
   appTruncationNote: 'Primeiros {shown} de {total}',
   appGoToButtonTitle: 'Ir para (⌘G)',
-  appNameBoxTitle: 'Caixa de nome — digite um endereço ou nome e pressione Enter',
   appPivotChartHintIn: 'Criar um Gráfico Dinâmico a partir da Tabela Dinâmica atual',
   appPivotChartHintOut:
     'Selecione primeiro uma célula dentro da saída da Tabela Dinâmica e escolha um tipo de gráfico',
@@ -300,6 +299,8 @@ export const pt = {
   appAiDone: 'A IA terminou',
   appAiTurnLimit:
     '(Limite de chamadas de ferramentas atingido para esta solicitação; a resposta acima se baseia no que foi lido até agora e pode estar incompleta.)',
+  appAiTruncatedNote:
+    '(A resposta foi cortada pelo limite de comprimento e pode estar incompleta.)',
   appAiStopped: '(interrompido)',
   appAiNoSummary: 'A IA terminou sem gerar um resumo.',
   appAiNoAction: 'A IA não realizou nenhuma ação nem deu resposta. Tente novamente ou reformule.',
@@ -320,16 +321,25 @@ export const pt = {
     'Esta combinação de ícones não pode ser salva em xlsx — escolha outro conjunto de ícones.',
   appNeedFullLoadSort:
     'Classificar, filtrar, mover intervalos e dividir texto exigem o modo de carregamento completo — esta pasta de trabalho é muito grande e é carregada parcialmente por streaming.',
+  appFullLoadFilterTitle: 'A filtragem requer o carregamento completo',
+  appFullLoadFilterBody:
+    'Esta pasta de trabalho é grande e foi carregada apenas parcialmente em streaming. A filtragem (incluindo a contagem de valores) precisa dos dados completos. Carregar toda a pasta agora?',
+  appFullLoadStart: 'Carregar tudo',
+  appFullLoadRunning:
+    'Carregando toda a pasta de trabalho — a filtragem ficará disponível ao concluir…',
+  appFullLoadTooLarge:
+    'Esta pasta de trabalho é grande demais para ser totalmente carregada na memória; a filtragem não está disponível para este arquivo.',
+  appDialogCancel: 'Cancelar',
   appPivotSheetNoMove:
     'Esta planilha contém uma Tabela Dinâmica — mover intervalos ainda não é suportado.',
+  appMergeOverTable:
+    'A seleção sobrepõe uma tabela do Excel — mesclar células dentro de uma tabela ainda não é suportado.',
   appTableFilterNoEdit:
     'O filtro desta planilha pertence a uma tabela do Excel — a edição ainda não pode ser salva.',
   appAutofillStreaming:
     'O preenchimento automático em uma área ainda em streaming não é permitido por enquanto.',
   appDvNeedsIndexed:
     'Editar a validação de dados requer que esta planilha seja totalmente indexada primeiro — tente novamente em instantes.',
-  appDuplicateNeedsFullLoad:
-    'Duplicar uma planilha requer o modo de carregamento completo — esta pasta de trabalho é muito grande e é carregada parcialmente por streaming.',
   appPivotSheetNoDuplicate:
     'Esta planilha contém uma Tabela Dinâmica — duplicá-la ainda não é suportado.',
   appDuplicateScopedNames:
@@ -513,6 +523,7 @@ export const pt = {
   appBridgeUnavailable:
     'A ponte de arquivos do desktop está indisponível. Reinicie o aplicativo Electron.',
   appOpenCanceled: 'Seleção de pasta de trabalho cancelada.',
+  appOpeningWorkbook: 'Abrindo pasta de trabalho…',
   appOpened: '{name} aberto — edições de células são salvas de volta com ⌘S.',
   appOpenFailed: 'Não foi possível abrir a pasta de trabalho.',
   appPageSetupNeedsFile:
@@ -549,6 +560,12 @@ export const pt = {
   appPdfCanceled: 'Exportação de PDF cancelada.',
   appPdfExported: '{path} exportado.',
   appPdfExportFailed: 'Não foi possível exportar o PDF.',
+  appPrintPreparing: 'Preparando a impressão…',
+  appPrintSent: 'Enviado para a impressora.',
+  appPrintCanceled: 'Impressão cancelada.',
+  appPrintFailed: 'Não foi possível imprimir.',
+  appPrintNeedsFullLoad:
+    'A impressão requer que a pasta de trabalho esteja totalmente carregada; aguarde o fim do carregamento.',
   appCsvExportNeedsFullLoad:
     'A exportação de CSV requer a pasta de trabalho totalmente carregada — aguarde o carregamento terminar.',
   appCsvExportTooLarge: 'A planilha é grande demais para exportar como CSV.',
@@ -586,6 +603,8 @@ export const pt = {
     'Alterações de nomes definidos não podem ser salvas junto com alterações de linhas/colunas ou de estrutura de planilhas — salve em duas etapas.',
   appSaveErrChangedOnDisk:
     'O arquivo foi alterado no disco por outro programa — salvamento cancelado; reabra o arquivo e tente novamente.',
+  appSaveErrTargetLocked:
+    'Não foi possível substituir o arquivo — parece bloqueado por outro programa (aberto no Excel ou em verificação/sincronização). Feche-o lá e salve novamente.',
   appSaveErrStylesheetLimited:
     'A folha de estilos desta pasta de trabalho não tem a estrutura básica; as alterações de estilo não podem ser salvas.',
   appSaveErrPackageGuard:
@@ -641,6 +660,9 @@ export const pt = {
     'Pasta de trabalho totalmente carregada — fórmulas recalculam ao vivo, linhas/colunas editáveis.',
   appRangeMustBeVector: '{range} deve ser uma única linha ou uma única coluna de células.',
   appRangeTooManyCells: '{range} cobre mais de {max} células.',
+  appCopyLoadingRange: 'Carregando {range} para copiar…',
+  appCopyValuesOnly:
+    '{range} copiado apenas como valores ({cells} células): os estilos só são mantidos até {max} células.',
   appSheetStillIndexing: 'A planilha ainda está sendo indexada — tente novamente em instantes.',
   appPrintNothing: 'A planilha não tem nada para imprimir.',
   appPrintTooLarge:
@@ -675,6 +697,8 @@ export const pt = {
   appTabFormulas: 'Fórmulas',
   appTabData: 'Dados',
   appTabReview: 'Revisão',
+  appRibbonCollapse: 'Recolher a Faixa de Opções',
+  appRibbonExpand: 'Expandir a Faixa de Opções',
   appTabView: 'Exibir',
   appTabAi: 'IA',
   appTabChartDesign: 'Design do Gráfico',
@@ -1217,6 +1241,15 @@ export const pt = {
   appResetZoom: 'Redefinir zoom',
   appZoomToSelection: 'Zoom na Seleção',
   appZoomToSelectionDetail: 'Ajustar à seleção',
+  appStatAverage: 'Média',
+  appStatCount: 'Contagem',
+  appStatNumericalCount: 'Contagem numérica',
+  appStatMin: 'Mínimo',
+  appStatMax: 'Máximo',
+  appStatSum: 'Soma',
+  appZoomLevel: 'Nível de zoom',
+  appNormalViewTip: 'Modo normal',
+  appPageBreakPreviewTip: 'Visualização de quebra de página',
   appGroupWindow: 'Janela',
   appFreezePanes: 'Congelar Painéis',
   appFreezeTitle: 'Congelar linhas e colunas',
@@ -1260,6 +1293,9 @@ export const pt = {
   appCutTitle: 'Recortar ⌘X',
   appCopyTitle: 'Copiar ⌘C',
   appFormatPainter: 'Pincel de Formatação',
+  appFormatPainterTip: 'Pincel de Formatação — clique duas vezes para mantê-lo ativo até Esc',
+  appFormatPainterLocked:
+    'Pincel de Formatação fixado — selecione os intervalos a pintar; Esc ou um clique no botão encerra.',
   appGroupFont: 'Fonte',
   appIncreaseFontSize: 'Aumentar tamanho da fonte',
   appDecreaseFontSize: 'Diminuir tamanho da fonte',
@@ -1335,6 +1371,8 @@ export const pt = {
   appFormatMenu: 'Formatar',
   appRowHeight: 'Altura da linha',
   appColWidth: 'Largura da coluna',
+  appAutoFitRowHeight: 'Ajustar altura da linha automaticamente',
+  appAutoFitColWidth: 'Ajustar largura da coluna automaticamente',
   appRowHeightLabel: 'Altura da linha (pontos)',
   appColWidthLabel: 'Largura da coluna (caracteres)',
   appDeleteRow: 'Excluir linha',
@@ -1351,4 +1389,6 @@ export const pt = {
   appFindTitle: 'Localizar e Selecionar ⌘F',
   appReplace: 'Substituir',
   appGoTo: 'Ir para',
+  appInsertCells: 'Inserir células…',
+  appDeleteCells: 'Excluir células…',
 } satisfies Record<keyof typeof zh, string>

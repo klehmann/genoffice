@@ -13,11 +13,13 @@ import { ar } from './ai/ar'
 import { pt } from './ai/pt'
 import { it } from './ai/it'
 import { pl } from './ai/pl'
+import { cs } from './ai/cs'
 import { nl } from './ai/nl'
 import { ms } from './ai/ms'
 import { he } from './ai/he'
 import { hi } from './ai/hi'
 import { zhTW } from './ai/zh-TW'
+import { vi } from './ai/vi'
 
 /** User-visible copy for the ai/ panel and tool feedback (LLM prompts excluded) */
 export const aiStrings = defineStrings({
@@ -35,9 +37,11 @@ export const aiStrings = defineStrings({
   pt,
   it,
   pl,
+  cs,
   nl,
   ms,
   he,
   hi,
   'zh-TW': zhTW,
+  vi,
 })

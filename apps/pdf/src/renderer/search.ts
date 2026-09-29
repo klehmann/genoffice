@@ -1,4 +1,5 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist'
+import { foldCase } from '@genoffice/ui'
 
 /** One hit: original page + PDF user-space rects (multiple when spanning several text items) */
 export interface SearchMatch {
@@ -49,34 +50,38 @@ export async function buildSearchIndex(doc: PDFDocumentProxy): Promise<SearchInd
     const items: IndexedItem[] = []
     for (const it of content.items as RawTextItem[]) {
       if (typeof it.str !== 'string') continue
-      if (it.str.length > 0 && it.transform) {
-        const h = it.height || Math.hypot(it.transform[2] ?? 0, it.transform[3] ?? 0)
-        // Rotation tilts the baseline (b ≠ 0). A non-zero c alone is horizontal
-        // shear — synthetic italics — which stays horizontally set and must keep
-        // participating in block grouping.
-        const rot = Math.abs(it.transform[1] ?? 0) > h * 1e-3
-        items.push({
-          start: text.length,
-          end: text.length + it.str.length,
-          x: it.transform[4] ?? 0,
-          y: it.transform[5] ?? 0,
-          w: it.width ?? 0,
-          h,
-          ...(rot ? { rot: true } : {}),
-          ...(typeof it.fontName === 'string' ? { font: it.fontName } : {}),
-        })
+      if (it.str.length > 0) {
+        // Geometry is optional; without a transform the item still contributes its
+        // characters, or it is unfindable while its hasEOL newline still lands.
+        if (it.transform) {
+          const h = it.height || Math.hypot(it.transform[2] ?? 0, it.transform[3] ?? 0)
+          // Rotation tilts the baseline (b ≠ 0). A non-zero c alone is horizontal
+          // shear — synthetic italics — which stays horizontally set and must keep
+          // participating in block grouping.
+          const rot = Math.abs(it.transform[1] ?? 0) > h * 1e-3
+          items.push({
+            start: text.length,
+            end: text.length + it.str.length,
+            x: it.transform[4] ?? 0,
+            y: it.transform[5] ?? 0,
+            w: it.width ?? 0,
+            h,
+            ...(rot ? { rot: true } : {}),
+            ...(typeof it.fontName === 'string' ? { font: it.fontName } : {}),
+          })
+        }
         text += it.str
       }
       if (it.hasEOL) text += '\n'
     }
-    entries.push({ text, lower: text.toLowerCase(), items })
+    entries.push({ text, lower: foldCase(text), items })
   }
   return entries
 }
 
 /** Case-insensitive full-text search; rects linearly interpolated within items by char ratio (approximate; bounding box for rotated glyphs) */
 export function searchInIndex(index: SearchIndex, query: string): SearchMatch[] {
-  const q = query.toLowerCase()
+  const q = foldCase(query)
   if (!q) return []
   const matches: SearchMatch[] = []
   for (let pageIndex = 0; pageIndex < index.length; pageIndex++) {

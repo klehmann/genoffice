@@ -127,7 +127,6 @@ export const en = {
   appMoreItems: '+{count} more…',
   appTruncationNote: 'First {shown} of {total}',
   appGoToButtonTitle: 'Go To (⌘G)',
-  appNameBoxTitle: 'Name Box — type an address or name, then press Enter',
   appPivotChartHintIn: 'Create a PivotChart from the current PivotTable',
   appPivotChartHintOut: 'Select a cell inside the PivotTable output first, then pick a chart type',
   appChartColumn: 'Column',
@@ -276,6 +275,7 @@ export const en = {
   appAiDone: 'AI finished',
   appAiTurnLimit:
     '(Reached the tool-call turn limit for this request; the answer above is based on what was read so far and may be incomplete.)',
+  appAiTruncatedNote: '(The reply was cut off by the length limit and may be incomplete.)',
   appAiStopped: '(stopped)',
   appAiNoSummary: 'AI finished with no summary.',
   appAiNoAction: 'The AI made no changes and gave no reply. Try again or rephrase.',
@@ -294,14 +294,22 @@ export const en = {
     'This icon combination cannot be saved to xlsx — please choose a different icon set.',
   appNeedFullLoadSort:
     'Sorting, filtering, moving ranges, and splitting text need the fully-loaded mode — this workbook is too large and streams partially.',
+  appFullLoadFilterTitle: 'Filtering needs the full workbook',
+  appFullLoadFilterBody:
+    'This workbook is large and only partially streamed in. Filtering (including value counts) needs the complete data to be correct. Load the entire workbook now?',
+  appFullLoadStart: 'Load all',
+  appFullLoadRunning: 'Loading the entire workbook — filtering unlocks when it finishes…',
+  appFullLoadTooLarge:
+    'This workbook is too large to load fully into memory; filtering is unavailable for this file.',
+  appDialogCancel: 'Cancel',
   appPivotSheetNoMove: 'This sheet contains a PivotTable — moving ranges is not supported yet.',
+  appMergeOverTable:
+    'The selection overlaps an Excel table — merging cells inside a table is not supported yet.',
   appTableFilterNoEdit:
     "This sheet's filter belongs to an Excel table — editing it cannot be saved yet.",
   appAutofillStreaming: 'Autofill into an area that is still streaming in is not allowed yet.',
   appDvNeedsIndexed:
     'Editing data validation needs this sheet fully indexed first — try again in a moment.',
-  appDuplicateNeedsFullLoad:
-    'Duplicating a sheet needs the fully-loaded mode — this workbook is too large and streams partially.',
   appPivotSheetNoDuplicate:
     'This sheet contains a PivotTable — duplicating it is not supported yet.',
   appDuplicateScopedNames:
@@ -465,6 +473,7 @@ export const en = {
   appColumnLabel: 'Column {col}',
   appBridgeUnavailable: 'Desktop file bridge is unavailable. Restart the Electron app.',
   appOpenCanceled: 'Workbook selection canceled.',
+  appOpeningWorkbook: 'Opening workbook…',
   appOpened: 'Opened {name} — cell edits save back with ⌘S.',
   appOpenFailed: 'Unable to open the workbook.',
   appPageSetupNeedsFile: 'Open an XLSX file first — page setup saves into the file.',
@@ -499,6 +508,12 @@ export const en = {
   appPdfCanceled: 'PDF export canceled.',
   appPdfExported: 'Exported {path}.',
   appPdfExportFailed: 'Unable to export the PDF.',
+  appPrintPreparing: 'Preparing to print…',
+  appPrintSent: 'Sent to the printer.',
+  appPrintCanceled: 'Printing canceled.',
+  appPrintFailed: 'Unable to print.',
+  appPrintNeedsFullLoad:
+    'Printing needs the whole workbook loaded — please wait for loading to finish.',
   appCsvExportNeedsFullLoad:
     'CSV export needs the fully loaded workbook — wait for loading to finish.',
   appCsvExportTooLarge: 'The sheet is too large to export as CSV.',
@@ -535,6 +550,8 @@ export const en = {
     'Defined-name changes cannot be saved together with row/column or sheet-structure changes — save them separately.',
   appSaveErrChangedOnDisk:
     'The file was changed on disk by another program — save aborted; reopen the file and try again.',
+  appSaveErrTargetLocked:
+    'The file could not be replaced — it looks locked by another program (open in Excel, or being scanned/synced). Close it there and save again.',
   appSaveErrStylesheetLimited:
     "This workbook's stylesheet is missing basic structure, so style changes cannot be saved.",
   appSaveErrPackageGuard:
@@ -588,6 +605,9 @@ export const en = {
   appFullyLoaded: 'Workbook fully loaded — formulas recalculate live, rows/columns editable.',
   appRangeMustBeVector: '{range} must be a single row or a single column of cells.',
   appRangeTooManyCells: '{range} covers more than {max} cells.',
+  appCopyLoadingRange: 'Loading {range} for copy…',
+  appCopyValuesOnly:
+    '{range} copied as values only ({cells} cells): styles are kept only up to {max} cells.',
   appSheetStillIndexing: 'The sheet is still indexing — try again in a moment.',
   appPrintNothing: 'The sheet has nothing to print.',
   appPrintTooLarge:
@@ -620,6 +640,8 @@ export const en = {
   appTabFormulas: 'Formulas',
   appTabData: 'Data',
   appTabReview: 'Review',
+  appRibbonCollapse: 'Collapse the Ribbon',
+  appRibbonExpand: 'Expand the Ribbon',
   appTabView: 'View',
   appTabAi: 'AI',
   appTabChartDesign: 'Chart Design',
@@ -1160,6 +1182,15 @@ export const en = {
   appResetZoom: 'Reset zoom',
   appZoomToSelection: 'Zoom to Selection',
   appZoomToSelectionDetail: 'Fit the selection',
+  appStatAverage: 'Average',
+  appStatCount: 'Count',
+  appStatNumericalCount: 'Numerical Count',
+  appStatMin: 'Minimum',
+  appStatMax: 'Maximum',
+  appStatSum: 'Sum',
+  appZoomLevel: 'Zoom level',
+  appNormalViewTip: 'Normal view',
+  appPageBreakPreviewTip: 'Page break preview',
   appGroupWindow: 'Window',
   appFreezePanes: 'Freeze Panes',
   appFreezeTitle: 'Freeze rows and columns',
@@ -1203,6 +1234,9 @@ export const en = {
   appCutTitle: 'Cut ⌘X',
   appCopyTitle: 'Copy ⌘C',
   appFormatPainter: 'Format Painter',
+  appFormatPainterTip: 'Format Painter — double-click to keep it on until Esc',
+  appFormatPainterLocked:
+    'Format Painter locked — select any ranges to paint; Esc or click the button to stop.',
   appGroupFont: 'Font',
   appIncreaseFontSize: 'Increase font size',
   appDecreaseFontSize: 'Decrease font size',
@@ -1277,6 +1311,8 @@ export const en = {
   appFormatMenu: 'Format',
   appRowHeight: 'Row Height',
   appColWidth: 'Column Width',
+  appAutoFitRowHeight: 'AutoFit Row Height',
+  appAutoFitColWidth: 'AutoFit Column Width',
   appRowHeightLabel: 'Row height (points)',
   appColWidthLabel: 'Column width (characters)',
   appDeleteRow: 'Delete row',
@@ -1293,4 +1329,6 @@ export const en = {
   appFindTitle: 'Find & Select ⌘F',
   appReplace: 'Replace',
   appGoTo: 'Go To',
+  appInsertCells: 'Insert Cells…',
+  appDeleteCells: 'Delete Cells…',
 } satisfies Record<keyof typeof zh, string>

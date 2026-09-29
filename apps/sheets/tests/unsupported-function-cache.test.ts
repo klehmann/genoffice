@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { canonicalFunctionName, extractFunctionNames } from '../src/renderer/formula-functions'
 import { installSupportedFunctionProbe } from '../src/renderer/function-registry-probe'
 import {
+  engineResultKeepsCache,
   formulaKeepsCache,
   hasUsableCachedValue,
+  recalcResultKeepsCache,
   setSupportedFunctionProbe,
 } from '../src/renderer/univer-sync'
 import type { UniverRuntime } from '../src/renderer/univer-state'
@@ -192,5 +194,52 @@ describe('hasUsableCachedValue', () => {
     expect(hasUsableCachedValue(undefined)).toBe(false)
     expect(hasUsableCachedValue('#NAME?')).toBe(false)
     expect(hasUsableCachedValue('#N/A')).toBe(false)
+  })
+
+  it("rejects IronCalc's #ERROR! left behind by an earlier save", () => {
+    expect(hasUsableCachedValue('#ERROR!')).toBe(false)
+  })
+})
+
+describe('engineResultKeepsCache', () => {
+  it('keeps the cache for engine failures rather than Excel error values', () => {
+    expect(engineResultKeepsCache('#NAME?', 'FOO(A1)')).toBe(true)
+    // external-workbook references never parse; the cascade must stop here
+    expect(engineResultKeepsCache('#ERROR!', '[1]Sheet1!A1*2')).toBe(true)
+    expect(engineResultKeepsCache('#ERROR!', undefined)).toBe(true)
+    expect(engineResultKeepsCache('#DIV/0!', 'A1/0')).toBe(false)
+    expect(engineResultKeepsCache('#N/A', 'VLOOKUP(A1,B:C,2,0)')).toBe(false)
+  })
+
+  it('keeps the cache for locale-minted results', () => {
+    expect(engineResultKeepsCache('$1.00', 'DOLLAR(A1)')).toBe(true)
+    expect(engineResultKeepsCache('42', 'SUM(A1:A3)')).toBe(false)
+    expect(engineResultKeepsCache('42', undefined)).toBe(false)
+  })
+})
+
+describe('recalcResultKeepsCache', () => {
+  const aggregate = 'IFERROR(INDEX(A:R,AGGREGATE(15,6,ROW(B2:B40)/(B2:B40=$A$3),1),2),"")'
+
+  it('keeps a usable cache over a blank or error result before any edit', () => {
+    expect(recalcResultKeepsCache('', aggregate, 700, false)).toBe(true)
+    expect(recalcResultKeepsCache('#DIV/0!', 'D5/B5', 3.43, false)).toBe(true)
+    expect(recalcResultKeepsCache('#N/A', 'VLOOKUP(A1,B:C,2,0)', 'found', false)).toBe(true)
+    expect(recalcResultKeepsCache('#DIV/0!', 'D5/B5', '', false)).toBe(true)
+  })
+
+  it('overlays when the cache has nothing better', () => {
+    expect(recalcResultKeepsCache('', aggregate, undefined, false)).toBe(false)
+    expect(recalcResultKeepsCache('', aggregate, null, false)).toBe(false)
+    expect(recalcResultKeepsCache('#DIV/0!', 'D5/B5', '#N/A', false)).toBe(false)
+    expect(recalcResultKeepsCache('42', 'SUM(A1:A3)', 7, false)).toBe(false)
+  })
+
+  it('lets edited workbooks show blank and error results', () => {
+    expect(recalcResultKeepsCache('', aggregate, 700, true)).toBe(false)
+    expect(recalcResultKeepsCache('#DIV/0!', 'D5/B5', 3.43, true)).toBe(false)
+    // Engine failures still keep the cache regardless of edits.
+    expect(recalcResultKeepsCache('#NAME?', 'FOO(A1)', 1, true)).toBe(true)
+    expect(recalcResultKeepsCache('#ERROR!', undefined, 1, true)).toBe(true)
   })
 })

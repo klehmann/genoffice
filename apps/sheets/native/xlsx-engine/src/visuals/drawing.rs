@@ -11,8 +11,21 @@ pub(crate) fn parse_text_paragraphs(
     body.children()
         .filter(|node| node.has_tag_name("p"))
         .map(|paragraph| {
-            let align = direct_child(paragraph, "pPr")
+            let properties = direct_child(paragraph, "pPr");
+            let align = properties
                 .and_then(|node| node.attribute("algn"))
+                .map(ToOwned::to_owned);
+            let emu_points = |name: &str| {
+                properties
+                    .and_then(|node| node.attribute(name))
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .map(|value| value / 12700.0)
+            };
+            let auto_num = properties.and_then(|node| direct_child(node, "buAutoNum"));
+            let bullet_char = properties
+                .and_then(|node| direct_child(node, "buChar"))
+                .and_then(|node| node.attribute("char"))
+                .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned);
             let mut runs = Vec::new();
             for child in paragraph.children() {
@@ -24,6 +37,7 @@ pub(crate) fn parse_text_paragraphs(
                         italic: false,
                         underline: false,
                         size: None,
+                        caps: None,
                     });
                     continue;
                 }
@@ -52,9 +66,28 @@ pub(crate) fn parse_text_paragraphs(
                         .and_then(|rpr| rpr.attribute("sz"))
                         .and_then(|value| value.parse::<f64>().ok())
                         .map(|value| value / 100.0),
+                    caps: properties
+                        .and_then(|rpr| rpr.attribute("cap"))
+                        .filter(|value| *value == "all" || *value == "small")
+                        .map(ToOwned::to_owned),
                 });
             }
-            ShapeParagraph { align, runs }
+            ShapeParagraph {
+                align,
+                margin_left: emu_points("marL"),
+                indent: emu_points("indent"),
+                bullet_scheme: auto_num
+                    .map(|node| node.attribute("type").unwrap_or("arabicPeriod").to_owned()),
+                bullet_start_at: auto_num
+                    .and_then(|node| node.attribute("startAt"))
+                    .and_then(|value| value.parse::<u32>().ok()),
+                bullet_char: if auto_num.is_some() {
+                    None
+                } else {
+                    bullet_char
+                },
+                runs,
+            }
         })
         .collect()
 }
@@ -66,6 +99,8 @@ pub(crate) fn read_drawing(
     id_offset: usize,
     colors: &ColorContext,
     ole_shape_ids: &HashSet<u32>,
+    slicer_captions: &HashMap<String, String>,
+    formats: &mut SourceFormats,
 ) -> Result<Vec<VisualObject>, SidecarError> {
     let xml = read_xml(archive, drawing_path)?;
     let document = parse_document(&xml, drawing_path)?;
@@ -121,6 +156,7 @@ pub(crate) fn read_drawing(
                     drawing_path,
                     &relationships,
                     &mut visuals,
+                    0,
                 )?;
             }
             continue;
@@ -141,7 +177,7 @@ pub(crate) fn read_drawing(
                 sheet_id: sheet_id.to_owned(),
                 kind: "chart".into(),
                 anchor,
-                chart: Some(read_chart(archive, &chart_path, colors)?),
+                chart: Some(read_chart(archive, &chart_path, colors, formats)?),
                 chart_path: Some(chart_path.clone()),
                 media_path: None,
                 media_type: None,
@@ -162,6 +198,8 @@ pub(crate) fn read_drawing(
                 flip_v: false,
                 text_color: None,
                 text_anchor: None,
+                text_vert_overflow: None,
+                text_horz_overflow: None,
                 paragraphs: None,
                 text: None,
                 prog_id: None,
@@ -224,6 +262,8 @@ pub(crate) fn read_drawing(
                 flip_v: false,
                 text_color: None,
                 text_anchor: None,
+                text_vert_overflow: None,
+                text_horz_overflow: None,
                 paragraphs: None,
                 text: None,
                 prog_id: None,
@@ -233,6 +273,56 @@ pub(crate) fn read_drawing(
                 nv_id: None,
                 drawing_path: Some(drawing_path.to_owned()),
                 drawing_index: Some(index),
+            });
+            continue;
+        }
+        // Slicer/timeline graphicFrames come wrapped in mc:AlternateContent
+        // whose mc:Fallback is a text box ("This shape represents a
+        // slicer..."). Excel renders the Choice, so the fallback must never
+        // surface; a read-only placeholder keeps the footprint instead.
+        if let Some(slicer_name) = slicer_frame_name(anchor_node) {
+            visuals.push(VisualObject {
+                id: visual_id,
+                sheet_id: sheet_id.to_owned(),
+                kind: "slicer".into(),
+                anchor,
+                chart: None,
+                chart_path: None,
+                media_path: None,
+                media_type: None,
+                opacity: None,
+                crop: None,
+                fill_media_path: None,
+                fill_media_type: None,
+                name: Some(slicer_name.to_owned()),
+                shape_type: None,
+                custom_path: None,
+                fill_color: None,
+                fill_gradient: None,
+                line_color: None,
+                line_width: None,
+                line_dash: None,
+                line_cap: None,
+                flip_h: false,
+                flip_v: false,
+                text_color: None,
+                text_anchor: None,
+                text_vert_overflow: None,
+                text_horz_overflow: None,
+                paragraphs: None,
+                text: Some(
+                    slicer_captions
+                        .get(slicer_name)
+                        .cloned()
+                        .unwrap_or_else(|| slicer_name.to_owned()),
+                ),
+                prog_id: None,
+                rotation: None,
+                frame_width: None,
+                frame_height: None,
+                nv_id: None,
+                drawing_path: None,
+                drawing_index: None,
             });
             continue;
         }
@@ -264,11 +354,25 @@ pub(crate) fn read_drawing(
     for visual in &mut visuals {
         if visual.kind == "chart" && visual.chart.is_none() {
             if let Some(chart_path) = visual.chart_path.clone() {
-                visual.chart = Some(read_chart(archive, &chart_path, colors)?);
+                visual.chart = Some(read_chart(archive, &chart_path, colors, formats)?);
             }
         }
     }
     Ok(visuals)
+}
+
+/// `sle:slicer` / `tsle:timeslicer` @name of a slicer graphicFrame anchor.
+fn slicer_frame_name<'a>(anchor_node: Node<'a, '_>) -> Option<&'a str> {
+    anchor_node
+        .descendants()
+        .find(|node| {
+            node.has_tag_name("graphicData")
+                && node
+                    .attribute("uri")
+                    .is_some_and(|uri| uri.ends_with("/slicer") || uri.ends_with("/timeslicer"))
+        })
+        .and_then(|data| data.first_element_child())
+        .and_then(|node| node.attribute("name"))
 }
 
 /// One `sp`/`cxnSp` node → a shape visual placed at `anchor`. Shared by the
@@ -364,10 +468,15 @@ pub(crate) fn shape_visual(
                     .collect::<Vec<_>>()
                     .join("\n")
             });
-            let text_anchor = body
-                .and_then(|node| direct_child(node, "bodyPr"))
-                .and_then(|node| node.attribute("anchor"))
-                .map(ToOwned::to_owned);
+            let body_pr = body.and_then(|node| direct_child(node, "bodyPr"));
+            let body_attribute = |name: &str| {
+                body_pr
+                    .and_then(|node| node.attribute(name))
+                    .map(ToOwned::to_owned)
+            };
+            let text_anchor = body_attribute("anchor");
+            let text_vert_overflow = body_attribute("vertOverflow");
+            let text_horz_overflow = body_attribute("horzOverflow");
             // xdr:style theme references are the fallback when spPr carries
             // no explicit fill/line (Excel's default for inserted shapes).
             let style_node = shape_node
@@ -452,6 +561,8 @@ pub(crate) fn shape_visual(
                 flip_v: flipped("flipV"),
                 text_color,
                 text_anchor,
+                text_vert_overflow,
+                text_horz_overflow,
                 paragraphs,
                 text,
                 prog_id: None,
@@ -617,7 +728,16 @@ pub(crate) fn expand_group(
     drawing_path: &str,
     relationships: &HashMap<String, Relationship>,
     visuals: &mut Vec<VisualObject>,
+    depth: usize,
 ) -> Result<(), SidecarError> {
+    // A stack overflow is not a panic — catch_unwind cannot stop the process
+    // abort, and the file itself decides how deep this recursion goes. Excel
+    // nests groups a handful of levels deep; anything past MAX_GROUP_DEPTH is
+    // skipped, not followed.
+    const MAX_GROUP_DEPTH: usize = 32;
+    if depth > MAX_GROUP_DEPTH {
+        return Ok(());
+    }
     let (box_x, box_y, box_width, box_height) = group_box;
     let xfrm = group_xfrm(group);
     let ch_off_x = xfrm_value(xfrm, "chOff", "x").unwrap_or(0.0);
@@ -669,6 +789,7 @@ pub(crate) fn expand_group(
                 drawing_path,
                 relationships,
                 visuals,
+                depth + 1,
             )?;
             continue;
         }
@@ -744,6 +865,8 @@ pub(crate) fn expand_group(
                 flip_v: false,
                 text_color: None,
                 text_anchor: None,
+                text_vert_overflow: None,
+                text_horz_overflow: None,
                 paragraphs: None,
                 text: None,
                 prog_id: None,
@@ -795,6 +918,8 @@ pub(crate) fn expand_group(
             flip_v: false,
             text_color: None,
             text_anchor: None,
+            text_vert_overflow: None,
+            text_horz_overflow: None,
             paragraphs: None,
             text: None,
             prog_id: None,

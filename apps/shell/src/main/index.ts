@@ -1,14 +1,17 @@
 import { execSync, spawn } from 'node:child_process'
 import {
-  copyFileSync,
   cpSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, dirname, extname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import {
   BrowserWindow,
   Menu,
@@ -22,6 +25,8 @@ import {
   webContents,
 } from 'electron'
 import type { MenuItemConstructorOptions, NativeImage, WebContents } from 'electron'
+import { atomicCopyFile, atomicWriteFile } from './atomic-write'
+import { tabStripOverlay } from './title-bar-overlay'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
 import menuDocxIcon2x from './assets/menu-docx@2x.png?asset'
 import menuXlsxIcon1x from './assets/menu-xlsx.png?asset'
@@ -32,6 +37,8 @@ import menuPdfIcon1x from './assets/menu-pdf.png?asset'
 import menuPdfIcon2x from './assets/menu-pdf@2x.png?asset'
 import menuMdIcon1x from './assets/menu-md.png?asset'
 import menuMdIcon2x from './assets/menu-md@2x.png?asset'
+import menuHtmlIcon1x from './assets/menu-html.png?asset'
+import menuHtmlIcon2x from './assets/menu-html@2x.png?asset'
 import menuHomeIcon1x from './assets/menu-home.png?asset'
 import menuHomeIcon2x from './assets/menu-home@2x.png?asset'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@genoffice/i18n'
@@ -45,11 +52,32 @@ import {
   installContextMenu,
   installNavigationGuard,
   isUsableSaveDir,
+  HEADLESS_EXIT,
+  formatHeadlessEnvelope,
+  headlessExitCode,
+  parseHeadlessExportArgv,
+  setHeadlessMode,
+  type HeadlessArgvParse,
   showOpenDialogWithMemory,
   showSaveDialogWithMemory,
   windowMenuTemplate,
+  aboutMenuItem,
+  checkUpdatesMenuItem,
+  setUpdateCheckInvoker,
+  installRendererProtocol,
 } from '@genoffice/electron-utils'
-import { readAppSettings, writeAppSetting, writeAppSettings } from './app-settings'
+import {
+  readAppSettings,
+  writeAppSetting,
+  writeAppSettings,
+  writeAppSettingThen,
+} from './app-settings'
+import { OPEN_DOCUMENTS_FILE, clearOpenDocuments, publishOpenDocuments } from './open-documents'
+import { startControlServer, type ControlServer } from './control-server'
+import { controlHandler } from './control-handlers'
+import { installCliLinkBestEffort } from './cli-link'
+import { createDefaultAppService, execFileRunner } from './default-app'
+import { registerIntegrationsIpc } from './integrations-ipc'
 import {
   ANALYTICS_ENABLED_KEY,
   analyticsEnabledFrom,
@@ -78,17 +106,14 @@ import {
   syncCloudProjects,
 } from './cloud-projects'
 import { handleDroppedFiles } from './dropped-files'
-import { ProjectStore } from '@genoffice/project-store'
+import { collectLaunchPaths } from './launch-paths'
 import {
-  ensureGenofficeLogin,
   genofficeLogout,
-  gskConvertPdfToDocx,
   gskLoginInfo,
-  hasGskAuth,
   loadGenofficeAuth,
-  resolveGskEntry,
   setGskProxyUrl,
   startGenofficeLogin,
+  watchGskApiKey,
 } from '@genoffice/ai-search'
 
 import {
@@ -107,32 +132,62 @@ import {
   registerProjectIpc,
   toggleStarredFile,
   registerDocsIpc,
+  exportDocsHeadless,
   setDocsExtraFileMenuItems,
   setDocsMenuGate,
   setDocsShellHooks,
   createAiDocument,
+  projectFilePaths,
   projectFileRenamed,
+  setDocsHostWindowHook,
   setDocsShellWindow,
   setDocsFileSavedHook,
   setDocsFileOpenedHook,
   setSessionPathResolver,
   defaultSaveDir,
   uniquePathIn,
+  authorizeMcpDocWrite,
 } from '../../../docs/src/main/docs-main'
-import { blankXlsxBuffer } from '../../../sheets/src/gateway/csv-import'
+import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import { blankPdfBuffer } from '../../../pdf/src/main/blank-pdf'
 import {
+  applyMcpSettings,
+  clearMcpLogs,
+  configureMcpRuntime,
+  getMcpRecentLogs,
+  mcpLogFilePath,
+  mcpStatus,
+  revealMcpLogFile,
+  startMcpFromSettings,
+  stopMcpSync,
+  type McpSettings,
+} from './mcp/app-mcp'
+import { createCliRunner } from './mcp/cli-runner'
+import { DEFAULT_MCP_PORT } from './mcp/mcp-server'
+import { createDocsControl, installDocsBridge } from './mcp/docs-bridge'
+import { createSlidesControl } from './mcp/slides-bridge'
+import { createSheetsControl, installSheetsBridge } from './mcp/sheets-bridge'
+import { createOpenDocumentsControl, createOpenTargetResolver } from './mcp/open-documents-bridge'
+import {
   configureSheetsRuntime,
+  exportSheetsPdfHeadless,
   hasActiveQueuedWorkbook,
   installSheetsMenu,
   markSheetsShuttingDown,
+  resetSheetsShuttingDown,
   requestSheetsClose,
   resolveSheetsSessionPath,
+  markSheetsUnsavedNew,
   markSheetsUntitledPath,
+  pendingUnsavedNewRecoveries,
+  unmarkSheetsUnsavedNew,
+  sheetsSuggestedPathTaken,
+  authorizeMcpSheetWrite,
   sendSheetsMenuAction,
   sheetsFileRenamed,
   setSheetsCloseTabHook,
   setSheetsExtraFileMenuItems,
+  setSheetsHostWindowHook,
   setSheetsShellWindow,
   setSheetsWorkbookOpenedHook,
   startSheetsCaptureServer,
@@ -140,12 +195,16 @@ import {
 } from '../../../sheets/src/main/sheets-main'
 import {
   configureSlidesRuntime,
+  discardSlidesRecovery,
+  exportSlidesPdfHeadless,
   installSlidesMenu,
+  readSlidesRecentFiles,
   replaceSlidesRecentFile,
   requestSlidesClose,
   setSlidesCloseTabHook,
   setSlidesExtraFileMenuItems,
   setSlidesOpenedHook,
+  setSlidesHostWindowHook,
   setSlidesShellWindow,
   setSlidesShowBleed,
   slidesFileRenamed,
@@ -154,11 +213,13 @@ import {
   configurePdfRuntime,
   flushPdfSave,
   markPdfUntitledPath,
+  pdfFileRenamed,
   pdfIsDirty,
   requestPdfClose,
   requestPdfSaveAs,
   sendPdfPrintRequest,
   setPdfRenamedHook,
+  setPdfRedactionSavedHook,
   setPdfSaveAsInFlight,
 } from '../../../pdf/src/main/pdf-main'
 import { PDF_CHANNELS } from '../../../pdf/src/shared/ipc'
@@ -168,7 +229,11 @@ import { convertPdfFileToXlsxLocalWithPrompt } from './pdf2xlsx-local'
 import { closePdfPasswordDialog, promptPdfPassword } from './pdf-password-dialog'
 import {
   configureMarkdownRuntime,
+  exportMarkdownPdfHeadless,
+  markdownDiscardPendingAssets,
   markdownFileRenamed,
+  markdownReadText,
+  markdownSaveToPath,
   requestMarkdownClose,
   requestMarkdownSave,
   sendMarkdownExportRequest,
@@ -176,21 +241,116 @@ import {
   setMarkdownDocxExportedHook,
   setMarkdownFileSavedHook,
 } from '../../../markdown/src/main/markdown-main'
+import {
+  configureHtmlRuntime,
+  exportHtmlHeadless,
+  htmlDiscardPendingAssets,
+  htmlFileRenamed,
+  htmlReadText,
+  htmlSaveToPath,
+  registerPrivilegedSchemes,
+  requestHtmlClose,
+  requestHtmlSave,
+  sendHtmlExportRequest,
+  sendHtmlPrintRequest,
+  setHtmlDocxExportPrepareHook,
+  setHtmlDocxExportedHook,
+  setHtmlFileSavedHook,
+  setHtmlPresentHooks,
+  setHtmlProvisionalTitleHook,
+} from '../../../html/src/main/html-main'
 import type {
   AccountLoginEvent,
+  AutoSaveDefault,
+  FolderListing,
+  FolderRoot,
+  MoveConflictPolicy,
+  MoveResult,
+  NewFileOpts,
   RecentEntry,
   RecentPage,
   RenameResult,
   StarPromptShow,
   UiTheme,
+  FileSearchPage,
+  FileSearchQuery,
+  FileSearchRerank,
+  FileSearchSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
+import {
+  normalizeAiPanelPrefs,
+  sameAiPanelPrefs,
+  type AiPanelPrefs,
+} from '@genoffice/ui/ai-panel-prefs'
 import type { TabKind } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
 import { showErrorDialog } from './error-dialog'
-import { normalizeRecentQuery, pageRecentPaths, statPathEntries } from './recent-files'
+import { startRendererWatchdog } from './renderer-watchdog'
+import {
+  matchesExtFamily,
+  normalizeRecentQuery,
+  pageRecentPaths,
+  statPathEntries,
+} from './recent-files'
+import { isSameFile, pdfSaveAsTarget, isValidRawRenameName } from './rename-validation'
+import {
+  FolderWatcher,
+  createFolder,
+  describeRoot,
+  isInsideRoot,
+  pathsUnder,
+  listFolder,
+  movePathsInto,
+  rebasePath,
+  renameFolder,
+  uniqueNameIn,
+  type FolderErrors,
+} from './folder-tree'
+import {
+  FOLDER_ROOTS_KEY,
+  describeExtraRoot,
+  readExtraRoots,
+  withExtraRoot,
+  withoutExtraRoot,
+} from './folder-roots'
+import extractWorkerPath from './file-index/extract-worker?modulePath'
+import { FileIndexer } from './file-index/indexer'
+import { FileIndexStore } from './file-index/store'
+import {
+  jevEndpointOf,
+  normalizeFileSearchSettings,
+  probeJev,
+  SearchReranker,
+} from './file-index/rerank'
+import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
-import { applyUpdateChannel, initAutoUpdater } from './updater'
+import {
+  activateDetached,
+  closeDetachedWithoutPrompt,
+  createDetachedEditorWindow,
+  detachedFilePaths,
+  detachedOpenDocuments,
+  detachedRenameFile,
+  detachedSetFileFor,
+  detachedWebContentsFor,
+  detachedSetTitleFor,
+  detachedWindowForWebContents,
+  dockBandFor,
+  dragTornWindow,
+  endTornDrag,
+  findDetachedTabByPath,
+  focusDetachedByPath,
+  focusedDetachedKind,
+  focusedDetachedTab,
+  isDetachedEditorWindow,
+  isDetachedTabId,
+  isTearingOff,
+  setDetachedChangedListener,
+  setDockHost,
+  takeTornTab,
+} from './detached-windows'
+import { applyUpdateChannel, checkForUpdatesNow, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 
 /**
@@ -212,6 +372,18 @@ if (!app.isPackaged)
     'userData',
     process.env.GENOFFICE_USER_DATA ?? join(app.getPath('appData'), 'GenOffice Dev'),
   )
+
+/**
+ * `--headless-export <file> --to <format> --out <path> [--json]`: one document, no
+ * window, one stdout line, then exit. Parsed at module scope so the dock icon
+ * is gone before the app can bounce it and so every editor module sees the
+ * headless flag before it registers anything.
+ */
+const headlessArgv = parseHeadlessExportArgv(process.argv)
+if (headlessArgv.kind !== 'none') {
+  setHeadlessMode(true)
+  app.dock?.hide()
+}
 
 // The product rename from "AI Office" to GenOffice changed the userData path; migrate old user data once
 if (app.isPackaged) {
@@ -241,6 +413,9 @@ const PDF_OUT = app.isPackaged
 const MARKDOWN_OUT = app.isPackaged
   ? join(process.resourcesPath, 'modules', 'markdown')
   : join(APPS_ROOT, 'markdown', 'out')
+const HTML_OUT = app.isPackaged
+  ? join(process.resourcesPath, 'modules', 'html')
+  : join(APPS_ROOT, 'html', 'out')
 const SIDECAR_BIN = app.isPackaged
   ? join(process.resourcesPath, 'native', SIDECAR_EXE)
   : join(APPS_ROOT, 'sheets', 'native', 'xlsx-engine', 'target', 'release', SIDECAR_EXE)
@@ -279,12 +454,33 @@ configureMarkdownRuntime({
   rendererFile: join(MARKDOWN_OUT, 'renderer', 'index.html'),
   openGeneratedPath: (path) => openGeneratedDocument(path),
 })
+configureHtmlRuntime({
+  preloadPath: join(HTML_OUT, 'preload', 'index.js'),
+  rendererUrl: process.env.HTML_RENDERER_URL,
+  rendererFile: join(HTML_OUT, 'renderer', 'index.html'),
+  openGeneratedPath: (path) => openGeneratedDocument(path),
+})
+// privileged-scheme registration is only legal before app ready
+registerPrivilegedSchemes()
 
 // ---- UI language ----
 // Persisted in userData/app-settings.json so the editor modules can read the
 // same file when they pick up i18n later. GENOFFICE_LANG overrides for tests.
 
 const APP_SETTINGS_PATH = () => join(app.getPath('userData'), 'app-settings.json')
+const OPEN_DOCUMENTS_PATH = () => join(app.getPath('userData'), OPEN_DOCUMENTS_FILE)
+/** only the instance holding the single-instance lock may write or remove the registry */
+let ownsOpenDocumentsRegistry = false
+let stopAuthWatch: (() => void) | null = null
+const publishOpenDocumentsIfOwner = (paths: readonly string[]) => {
+  if (ownsOpenDocumentsRegistry) publishOpenDocuments(OPEN_DOCUMENTS_PATH(), paths)
+}
+
+/** every open file: the shell's tabs plus the detached editor windows */
+function publishAllOpenDocuments(): void {
+  publishOpenDocumentsIfOwner([...(tabManager?.openFilePaths() ?? []), ...detachedFilePaths()])
+}
+setDetachedChangedListener(publishAllOpenDocuments)
 
 let uiLang: Lang | null = null
 
@@ -303,9 +499,12 @@ function currentLang(): Lang {
 }
 
 function persistLang(lang: Lang): void {
-  uiLang = lang
-  setUiLang(lang)
-  writeAppSetting(APP_SETTINGS_PATH(), 'language', lang)
+  // write first: app-settings.json can be unwritable, and a language committed to
+  // memory before the write survives only until the next launch
+  writeAppSettingThen(APP_SETTINGS_PATH(), 'language', lang, (persisted) => {
+    uiLang = persisted
+    setUiLang(persisted)
+  })
 }
 
 let cachedUpdateChannel: UpdateChannel | null = null
@@ -324,6 +523,48 @@ function currentTheme(): UiTheme {
   const saved = readAppSettings(APP_SETTINGS_PATH()).theme
   cachedTheme = saved === 'light' || saved === 'dark' ? saved : 'system'
   return cachedTheme
+}
+
+let cachedAutoSaveDefault: AutoSaveDefault | null = null
+
+function currentAutoSaveDefault(): AutoSaveDefault {
+  if (cachedAutoSaveDefault) return cachedAutoSaveDefault
+  const saved = readAppSettings(APP_SETTINGS_PATH())
+  const updatedAt = saved.autoSaveDefaultUpdatedAt
+  cachedAutoSaveDefault = {
+    on: saved.autoSaveDefault === true,
+    updatedAt: typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : 0,
+  }
+  return cachedAutoSaveDefault
+}
+
+/** MCP server settings (persisted in userData/app-settings.json; default off). */
+function currentMcpSettings(): McpSettings {
+  const saved = readAppSettings(APP_SETTINGS_PATH())
+  const port = saved.mcpPort
+  return {
+    enabled: saved.mcpEnabled === true,
+    port:
+      typeof port === 'number' && Number.isInteger(port) && port > 0 && port < 65536
+        ? port
+        : DEFAULT_MCP_PORT,
+    background: saved.mcpBackground === true,
+    logging: saved.mcpLogging === true,
+  }
+}
+
+let cachedAiPanelPrefs: AiPanelPrefs | null = null
+function currentAiPanelPrefs(): AiPanelPrefs {
+  if (cachedAiPanelPrefs) return cachedAiPanelPrefs
+  const saved = readAppSettings(APP_SETTINGS_PATH())
+  cachedAiPanelPrefs = normalizeAiPanelPrefs({
+    side: saved.aiPanelSide,
+    fontSize: saved.aiPanelFontSize,
+    customFontSize: saved.aiPanelCustomFontSize,
+    spellcheck: saved.aiPanelSpellcheck,
+    openInNewDocs: saved.aiPanelOpenInNewDocs,
+  })
+  return cachedAiPanelPrefs
 }
 
 // ---- anonymous usage analytics (see src/main/analytics.ts) ----
@@ -455,19 +696,31 @@ async function fetchGithubStars(): Promise<number | null> {
 
 const tMain = createI18n({
   zh: {
+    dlgAddFolderRoot: '添加文件夹到首页',
+    watchdogTitle: '文档占用资源过高',
+    watchdogBody:
+      '“{title}” 已持续数分钟占用大量内存或 CPU（内存 {memory} MB，CPU {cpu}%）。可以继续等待，或关闭这个文档（有未保存的改动会先询问是否保存）。诊断信息已记录。', // public-hygiene: allow
+    watchdogWait: '继续等待',
+    watchdogClose: '关闭文档',
+    errFolderRootUnusable: '无法读取所选文件夹',
     menuFile: '文件',
     menuSectionNew: '新建',
+    menuOpenInNewWindow: '在新窗口中打开',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '未命名表格',
     untitledDoc: '未命名文档',
     untitledDeck: '未命名演示文稿',
     untitledMarkdown: '未命名 Markdown',
+    untitledHtml: '未命名 HTML',
     untitledPdf: '未命名 PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: '导出为 PDF…',
+    menuExportImages: '导出为图片…',
+    menuExportHtml: '导出为单文件 HTML…',
     menuOpenInDocs: '转换为 Docs 文档并打开',
     menuPrint: '打印…',
     menuOpen: '打开…',
@@ -484,31 +737,24 @@ const tMain = createI18n({
     filterExcel: 'Excel 工作簿',
     filterPpt: 'PowerPoint 演示文稿',
     filterMarkdown: 'Markdown 文档',
+    filterHtml: 'HTML 文档',
     filterPdf: 'PDF 文档',
     errBadArgs: '参数无效',
     errBadName: '文件名不合法',
     errMissing: '文件不存在',
     errExists: '同名文件已存在',
     errRenameFailed: '重命名失败',
+    errPdfSaveAsFailed: '另存为 PDF 失败',
     errNewTabFailed: '新建文档失败',
+    errDuplicateFailed: '复制文件失败',
     errUnsupportedExt: '暂不支持 .{ext} 类型',
     copySuffix: '副本',
     menuHelp: '帮助',
     thirdPartyNotices: '第三方软件声明',
     menuExportDocx: '导出为 Word…',
-    pdfDocxLoginMsg: '导出为 Word 需要登录 Genspark 账号。',
-    pdfDocxLoginDetail: '点击“登录”将打开浏览器完成授权，完成后请重新点击导出。',
-    pdfDocxBtnLogin: '登录',
-    pdfDocxConfirmMsg: '将此 PDF 上传到 Genspark 云端转换为 Word？',
-    pdfDocxConfirmDetail: '本次转换将消耗 5 credits，文件将上传至云端处理。',
-    pdfDocxConfirmBalance: '当前余额 {balance} credits。',
-    pdfDocxBtnConvert: '继续',
     btnCancel: '取消',
     pdfDocxFailedMsg: '导出为 Word 失败',
-    pdfDocxNoCliMsg: '无法登录 Genspark：缺少必需组件（gsk），请重新安装应用。',
     pdfDocxBusyMsg: '正在转换中，请等待当前导出完成。',
-    menuExportDocxLocal: '导出为 Word（本地转换）…',
-    menuExportDocxCloud: '导出为 Word（云端转换）…',
     menuExportPptx: '导出为 PPT…',
     pdfPptxFailedMsg: '导出为 PPT 失败',
     pdfPptxBusyMsg: '正在转换中，请等待当前导出完成。',
@@ -520,16 +766,14 @@ const tMain = createI18n({
     pdfXlsxLocalSkippedMsg: '部分页面未转换为单元格',
     pdfXlsxLocalSkippedDetail: '第 {pages} 页无法转换为单元格，对应工作表中已写入提示行。',
     pdfDocxLocalScannedMsg: '检测到扫描件',
-    pdfDocxLocalScannedDetail:
-      '本地转换已按图片保真导出各页。如需可编辑的文本，请使用云端转换（支持 OCR）。',
+    pdfDocxLocalScannedDetail: '本地转换已按图片保真导出各页，未能识别出可编辑的文本。',
     pdfDocxLocalDegradedMsg: '部分页面已按图片导出',
     pdfDocxLocalDegradedDetail: '第 {pages} 页版面无法可靠重建，已按整页图片保真导出。',
     pdfDocxLocalOcrMsg: '扫描页已转换为可编辑文本',
     pdfDocxLocalOcrDetail:
       '第 {pages} 页为扫描件，已通过本地 OCR 识别为可编辑文字，建议校对识别结果。',
     pdfDocxLocalEncryptedDetail: '此 PDF 已加密，未提供正确的密码，无法转换。',
-    pdfDocxLocalUnsupportedEncDetail:
-      '该文件使用证书加密或不支持的加密方式，无法在本地转换，可尝试云端转换。',
+    pdfDocxLocalUnsupportedEncDetail: '该文件使用证书加密或不支持的加密方式，无法转换。',
     pdfPwdTitle: '输入密码',
     pdfPwdPrompt: '此 PDF 已加密，请输入打开密码：',
     pdfPwdRetryPrompt: '密码不正确，请重试。',
@@ -544,19 +788,31 @@ const tMain = createI18n({
     errSaveDirUnusable: '所选文件夹不可写，无法用作默认保存位置',
   },
   en: {
+    dlgAddFolderRoot: 'Add Folder to Home',
+    watchdogTitle: 'Document is using too many resources',
+    watchdogBody:
+      '"{title}" has been using a lot of memory or CPU for several minutes ({memory} MB, {cpu}% CPU). You can keep waiting, or close the document (you will be asked to save unsaved changes first). Diagnostics have been recorded.',
+    watchdogWait: 'Keep Waiting',
+    watchdogClose: 'Close Document',
+    errFolderRootUnusable: 'The selected folder cannot be read',
     menuFile: 'File',
     menuSectionNew: 'New',
+    menuOpenInNewWindow: 'Open in New Window',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Untitled Spreadsheet',
     untitledDoc: 'Untitled Document',
     untitledDeck: 'Untitled Presentation',
     untitledMarkdown: 'Untitled Markdown',
+    untitledHtml: 'Untitled HTML',
     untitledPdf: 'Untitled PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Export as PDF…',
+    menuExportImages: 'Export as Images…',
+    menuExportHtml: 'Export as Single-File HTML…',
     menuOpenInDocs: 'Convert and Open in Docs',
     menuPrint: 'Print…',
     menuOpen: 'Open…',
@@ -573,34 +829,24 @@ const tMain = createI18n({
     filterExcel: 'Excel Workbooks',
     filterPpt: 'PowerPoint Presentations',
     filterMarkdown: 'Markdown Documents',
+    filterHtml: 'HTML Documents',
     filterPdf: 'PDF Documents',
     errBadArgs: 'Invalid arguments',
     errBadName: 'Invalid file name',
     errMissing: 'File not found',
     errExists: 'A file with that name already exists',
     errRenameFailed: 'Rename failed',
+    errPdfSaveAsFailed: 'Could not save the PDF copy',
     errNewTabFailed: 'Could not create the new document',
+    errDuplicateFailed: 'Could not duplicate the file',
     errUnsupportedExt: '.{ext} files are not supported',
     copySuffix: 'copy',
     menuHelp: 'Help',
     thirdPartyNotices: 'Third-Party Notices',
     menuExportDocx: 'Export as Word…',
-    pdfDocxLoginMsg: 'Exporting as Word requires signing in to Genspark.',
-    pdfDocxLoginDetail:
-      'Clicking “Sign In” opens your browser to authorize; once done, click Export again.',
-    pdfDocxBtnLogin: 'Sign In',
-    pdfDocxConfirmMsg: 'Upload this PDF to Genspark cloud and convert it to Word?',
-    pdfDocxConfirmDetail:
-      'The conversion costs 5 credits. The file will be uploaded for cloud processing.',
-    pdfDocxConfirmBalance: 'Current balance: {balance} credits.',
-    pdfDocxBtnConvert: 'Continue',
     btnCancel: 'Cancel',
     pdfDocxFailedMsg: 'Export as Word failed',
-    pdfDocxNoCliMsg:
-      'Cannot sign in to Genspark: a required component (gsk) is missing. Please reinstall the app.',
     pdfDocxBusyMsg: 'A Word export is already in progress. Please wait for it to finish.',
-    menuExportDocxLocal: 'Export as Word (Local)…',
-    menuExportDocxCloud: 'Export as Word (Cloud)…',
     menuExportPptx: 'Export as PowerPoint…',
     pdfPptxFailedMsg: 'Export as PowerPoint failed',
     pdfPptxBusyMsg: 'An export is already in progress. Please wait for it to finish.',
@@ -616,7 +862,7 @@ const tMain = createI18n({
       'Pages {pages} could not be converted to cells; their worksheets carry a notice row instead.',
     pdfDocxLocalScannedMsg: 'Scanned document detected',
     pdfDocxLocalScannedDetail:
-      'The local conversion exported the pages as images to preserve their appearance. For editable text, use the cloud conversion (with OCR).',
+      'The pages were exported as images to preserve their appearance; no editable text could be recognized.',
     pdfDocxLocalDegradedMsg: 'Some pages were exported as images',
     pdfDocxLocalDegradedDetail:
       'Page(s) {pages} could not be reliably reconstructed and were exported as full-page images.',
@@ -626,7 +872,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'This PDF is encrypted and could not be opened without the correct password.',
     pdfDocxLocalUnsupportedEncDetail:
-      'This PDF uses certificate-based or otherwise unsupported encryption and cannot be converted locally. Try the cloud conversion instead.',
+      'This PDF uses certificate-based or otherwise unsupported encryption and cannot be converted.',
     pdfPwdTitle: 'Enter Password',
     pdfPwdPrompt: 'This PDF is encrypted. Enter the password to open it:',
     pdfPwdRetryPrompt: 'Incorrect password. Please try again.',
@@ -641,20 +887,132 @@ const tMain = createI18n({
     errSaveDirUnusable:
       'The selected folder is not writable and cannot be used as the default save location',
   },
+  vi: {
+    dlgAddFolderRoot: 'Thêm thư mục vào Trang chủ',
+    watchdogTitle: 'Tài liệu đang dùng quá nhiều tài nguyên',
+    watchdogBody:
+      '"{title}" đã dùng nhiều bộ nhớ hoặc CPU trong vài phút ({memory} MB, {cpu}% CPU). Bạn có thể tiếp tục chờ hoặc đóng tài liệu này (sẽ hỏi lưu các thay đổi chưa lưu trước). Thông tin chẩn đoán đã được ghi lại.',
+    watchdogWait: 'Tiếp tục chờ',
+    watchdogClose: 'Đóng tài liệu',
+    errFolderRootUnusable: 'Không thể đọc thư mục đã chọn',
+    menuFile: 'Tệp',
+    menuSectionNew: 'Mới',
+    menuOpenInNewWindow: 'Mở trong cửa sổ mới',
+    menuNewDoc: 'AI Docs',
+    menuNewSheet: 'AI Sheets',
+    untitledSheet: 'Bảng tính chưa có tiêu đề',
+    untitledDoc: 'Tài liệu chưa có tiêu đề',
+    untitledDeck: 'Bản trình bày chưa có tiêu đề',
+    untitledMarkdown: 'Markdown chưa có tiêu đề',
+    untitledHtml: 'HTML chưa có tiêu đề',
+    untitledPdf: 'PDF chưa có tiêu đề',
+    menuNewSlide: 'AI Slides',
+    menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
+    menuExportPdf: 'Xuất dưới dạng PDF…',
+    menuExportImages: 'Xuất dưới dạng hình ảnh…',
+    menuExportHtml: 'Xuất dưới dạng HTML một tệp…',
+    menuOpenInDocs: 'Chuyển đổi và mở trong Docs',
+    menuPrint: 'In…',
+    menuOpen: 'Mở…',
+    menuSave: 'Lưu',
+    menuSaveAs: 'Lưu dưới dạng…',
+    menuClose: 'Đóng',
+    menuEdit: 'Chỉnh sửa',
+    menuWindow: 'Cửa sổ',
+    menuHome: 'Trang chủ',
+    backToHome: 'Quay lại Trang chủ',
+    dlgOpenTitle: 'Mở tệp',
+    filterSupported: 'Các tệp được hỗ trợ',
+    filterWord: 'Tài liệu Word',
+    filterExcel: 'Sổ làm việc Excel',
+    filterPpt: 'Bản trình bày PowerPoint',
+    filterMarkdown: 'Tài liệu Markdown',
+    filterHtml: 'Tài liệu HTML',
+    filterPdf: 'Tài liệu PDF',
+    errBadArgs: 'Đối số không hợp lệ',
+    errBadName: 'Tên tệp không hợp lệ',
+    errMissing: 'Không tìm thấy tệp',
+    errExists: 'Một tệp có tên đó đã tồn tại',
+    errRenameFailed: 'Đổi tên thất bại',
+    errPdfSaveAsFailed: 'Không thể lưu bản sao PDF',
+    errNewTabFailed: 'Không thể tạo tài liệu mới',
+    errDuplicateFailed: 'Không thể nhân bản tệp',
+    errUnsupportedExt: 'Tệp .{ext} không được hỗ trợ',
+    copySuffix: 'bản sao',
+    menuHelp: 'Trợ giúp',
+    thirdPartyNotices: 'Thông báo của bên thứ ba',
+    menuExportDocx: 'Xuất dưới dạng Word…',
+    btnCancel: 'Hủy',
+    pdfDocxFailedMsg: 'Xuất dưới dạng Word thất bại',
+    pdfDocxBusyMsg: 'Một tác vụ xuất Word đang được tiến hành. Vui lòng đợi tác vụ hoàn tất.',
+    menuExportPptx: 'Xuất dưới dạng PowerPoint…',
+    pdfPptxFailedMsg: 'Xuất dưới dạng PowerPoint thất bại',
+    pdfPptxBusyMsg: 'Một tác vụ xuất đang được tiến hành. Vui lòng đợi tác vụ hoàn tất.',
+    pdfPptxLocalScannedDetail:
+      'Mỗi trang đã được xuất dưới dạng hình ảnh toàn trang; văn bản trên các trang trình bày không thể chỉnh sửa.',
+    menuExportXlsx: 'Xuất dưới dạng Excel…',
+    pdfXlsxFailedMsg: 'Xuất dưới dạng Excel thất bại',
+    pdfXlsxBusyMsg: 'Một tác vụ xuất đang được tiến hành. Vui lòng đợi tác vụ hoàn tất.',
+    pdfXlsxLocalScannedDetail:
+      'Các trang quét không thể chuyển đổi thành các ô; thay vào đó, trang tính của mỗi trang có một hàng thông báo.',
+    pdfXlsxLocalSkippedMsg: 'Một số trang không được chuyển đổi thành ô',
+    pdfXlsxLocalSkippedDetail:
+      'Các trang {pages} không thể chuyển đổi thành ô; thay vào đó bảng tính của chúng có một hàng thông báo.',
+    pdfDocxLocalScannedMsg: 'Phát hiện tài liệu quét',
+    pdfDocxLocalScannedDetail:
+      'Các trang được xuất dưới dạng hình ảnh để bảo toàn giao diện; không nhận dạng được văn bản có thể chỉnh sửa.',
+    pdfDocxLocalDegradedMsg: 'Một số trang được xuất dưới dạng hình ảnh',
+    pdfDocxLocalDegradedDetail:
+      '(Các) trang {pages} không thể tái cấu trúc đáng tin cậy và đã được xuất dưới dạng hình ảnh toàn trang.',
+    pdfDocxLocalOcrMsg: 'Các trang quét đã được chuyển đổi thành văn bản có thể chỉnh sửa',
+    pdfDocxLocalOcrDetail:
+      '(Các) trang {pages} là bản quét; văn bản của chúng đã được phục hồi bằng OCR trên thiết bị. Vui lòng kiểm tra lại kết quả.',
+    pdfDocxLocalEncryptedDetail:
+      'Tệp PDF này đã được mã hóa và không thể mở nếu không có mật khẩu chính xác.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Tệp PDF này sử dụng mã hóa dựa trên chứng thư số hoặc mã hóa không được hỗ trợ khác và không thể chuyển đổi.',
+    pdfPwdTitle: 'Nhập mật khẩu',
+    pdfPwdPrompt: 'Tệp PDF này đã được mã hóa. Nhập mật khẩu để mở:',
+    pdfPwdRetryPrompt: 'Mật khẩu không chính xác. Vui lòng thử lại.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Đang xác minh mật khẩu…',
+    pdfPwdLabel: 'Mật khẩu',
+    pdfPwdPlaceholder: 'Nhập mật khẩu để mở',
+    pdfPwdShow: 'Hiện mật khẩu',
+    pdfPwdHide: 'Ẩn mật khẩu',
+    pdfDocxLocalCorruptDetail:
+      'Tệp bị hỏng hoặc không phải là tệp PDF hợp lệ và không thể chuyển đổi.',
+    dlgPickSaveDir: 'Chọn vị trí lưu mặc định',
+    errSaveDirUnusable: 'Thư mục đã chọn không thể ghi và không thể dùng làm vị trí lưu mặc định',
+  },
   ja: {
+    dlgAddFolderRoot: 'フォルダーをホームに追加',
+    watchdogTitle: 'ドキュメントのリソース使用量が過大です',
+    watchdogBody:
+      '「{title}」が数分間にわたり大量のメモリまたは CPU を使用しています（メモリ {memory} MB、CPU {cpu}%）。そのまま待つか、このドキュメントを閉じることができます（未保存の変更がある場合は保存を確認します）。診断情報を記録しました。',
+    watchdogWait: '待つ',
+    watchdogClose: 'ドキュメントを閉じる',
+    errFolderRootUnusable: '選択したフォルダーを読み取れません',
     menuFile: 'ファイル',
     menuSectionNew: '新規作成',
+    menuOpenInNewWindow: '新しいウィンドウで開く',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '無題のスプレッドシート',
     untitledDoc: '無題のドキュメント',
     untitledDeck: '無題のプレゼンテーション',
     untitledMarkdown: '無題の Markdown',
+    untitledHtml: '無題の HTML',
     untitledPdf: '無題の PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'PDF として書き出す…',
+    menuExportImages: '画像としてエクスポート…',
+    menuExportHtml: '単一ファイル HTML として書き出す…',
     menuOpenInDocs: 'Docs 文書に変換して開く',
     menuPrint: '印刷…',
     menuOpen: '開く…',
@@ -671,34 +1029,24 @@ const tMain = createI18n({
     filterExcel: 'Excel ブック',
     filterPpt: 'PowerPoint プレゼンテーション',
     filterMarkdown: 'Markdown ドキュメント',
+    filterHtml: 'HTML ドキュメント',
     filterPdf: 'PDF ドキュメント',
     errBadArgs: '引数が無効です',
     errBadName: 'ファイル名が無効です',
     errMissing: 'ファイルが見つかりません',
     errExists: '同名のファイルが既に存在します',
     errRenameFailed: '名前の変更に失敗しました',
+    errPdfSaveAsFailed: 'PDF のコピーを保存できませんでした',
     errNewTabFailed: '新規ドキュメントを作成できませんでした',
+    errDuplicateFailed: 'ファイルを複製できませんでした',
     errUnsupportedExt: '.{ext} 形式には対応していません',
     copySuffix: 'コピー',
     menuHelp: 'ヘルプ',
     thirdPartyNotices: 'サードパーティソフトウェアに関する通知',
     menuExportDocx: 'Word として書き出す…',
-    pdfDocxLoginMsg: 'Word への書き出しには Genspark へのログインが必要です。',
-    pdfDocxLoginDetail:
-      '「ログイン」をクリックするとブラウザで認証します。完了後、もう一度書き出しを実行してください。',
-    pdfDocxBtnLogin: 'ログイン',
-    pdfDocxConfirmMsg: 'この PDF を Genspark クラウドにアップロードして Word に変換しますか？',
-    pdfDocxConfirmDetail:
-      '変換には 5 クレジットを消費します。ファイルはクラウドにアップロードされ処理されます。',
-    pdfDocxConfirmBalance: '現在の残高：{balance} クレジット。',
-    pdfDocxBtnConvert: '続行',
     btnCancel: 'キャンセル',
     pdfDocxFailedMsg: 'Word への書き出しに失敗しました',
-    pdfDocxNoCliMsg:
-      'Genspark にサインインできません：必要なコンポーネント（gsk）が見つかりません。アプリを再インストールしてください。',
     pdfDocxBusyMsg: 'Word への書き出しが進行中です。完了までお待ちください。',
-    menuExportDocxLocal: 'Word として書き出す（ローカル変換）…',
-    menuExportDocxCloud: 'Word として書き出す（クラウド変換）…',
     menuExportPptx: 'PowerPoint として書き出す…',
     pdfPptxFailedMsg: 'PowerPoint への書き出しに失敗しました',
     pdfPptxBusyMsg: '変換が進行中です。現在の書き出しが完了するまでお待ちください。',
@@ -714,7 +1062,7 @@ const tMain = createI18n({
       'ページ {pages} はセルに変換できなかったため、対応するワークシートに通知行を書き込みました。',
     pdfDocxLocalScannedMsg: 'スキャン文書を検出しました',
     pdfDocxLocalScannedDetail:
-      'ローカル変換では、見た目を保つため各ページを画像として書き出しました。編集可能なテキストが必要な場合は、クラウド変換（OCR 対応）をご利用ください。',
+      '見た目を保つため各ページを画像として書き出しました。編集可能なテキストは認識できませんでした。',
     pdfDocxLocalDegradedMsg: '一部のページを画像として書き出しました',
     pdfDocxLocalDegradedDetail:
       'ページ {pages} はレイアウトを正確に再構築できなかったため、ページ全体を画像として書き出しました。',
@@ -724,7 +1072,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'このPDFは暗号化されており、正しいパスワードがないため変換できませんでした。',
     pdfDocxLocalUnsupportedEncDetail:
-      'このPDFは証明書ベースまたは未対応の暗号化方式を使用しているため、ローカルでは変換できません。クラウド変換をお試しください。',
+      'このPDFは証明書ベースまたは未対応の暗号化方式を使用しているため、変換できません。',
     pdfPwdTitle: 'パスワードを入力',
     pdfPwdPrompt: 'このPDFは暗号化されています。開くためのパスワードを入力してください：',
     pdfPwdRetryPrompt: 'パスワードが正しくありません。もう一度お試しください。',
@@ -740,19 +1088,31 @@ const tMain = createI18n({
       '選択したフォルダーは書き込みできないため、既定の保存先として使用できません',
   },
   ko: {
+    dlgAddFolderRoot: '홈에 폴더 추가',
+    watchdogTitle: '문서가 리소스를 과도하게 사용하고 있습니다',
+    watchdogBody:
+      '"{title}"이(가) 몇 분 동안 많은 메모리 또는 CPU를 사용하고 있습니다(메모리 {memory} MB, CPU {cpu}%). 계속 기다리거나 이 문서를 닫을 수 있습니다(저장되지 않은 변경 사항이 있으면 먼저 저장 여부를 묻습니다). 진단 정보가 기록되었습니다.',
+    watchdogWait: '계속 기다리기',
+    watchdogClose: '문서 닫기',
+    errFolderRootUnusable: '선택한 폴더를 읽을 수 없습니다',
     menuFile: '파일',
     menuSectionNew: '새로 만들기',
+    menuOpenInNewWindow: '새 창에서 열기',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '제목 없는 스프레드시트',
     untitledDoc: '제목 없는 문서',
     untitledDeck: '제목 없는 프레젠테이션',
     untitledMarkdown: '제목 없는 Markdown',
+    untitledHtml: '제목 없는 HTML',
     untitledPdf: '제목 없는 PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'PDF로 내보내기…',
+    menuExportImages: '이미지로 내보내기…',
+    menuExportHtml: '단일 파일 HTML로 내보내기…',
     menuOpenInDocs: 'Docs 문서로 변환하여 열기',
     menuPrint: '인쇄…',
     menuOpen: '열기…',
@@ -769,34 +1129,24 @@ const tMain = createI18n({
     filterExcel: 'Excel 통합 문서',
     filterPpt: 'PowerPoint 프레젠테이션',
     filterMarkdown: 'Markdown 문서',
+    filterHtml: 'HTML 문서',
     filterPdf: 'PDF 문서',
     errBadArgs: '잘못된 인수입니다',
     errBadName: '파일 이름이 잘못되었습니다',
     errMissing: '파일을 찾을 수 없습니다',
     errExists: '같은 이름의 파일이 이미 있습니다',
     errRenameFailed: '이름 바꾸기에 실패했습니다',
+    errPdfSaveAsFailed: 'PDF 복사본을 저장할 수 없습니다',
     errNewTabFailed: '새 문서를 만들지 못했습니다',
+    errDuplicateFailed: '파일을 복제할 수 없습니다',
     errUnsupportedExt: '.{ext} 형식은 지원되지 않습니다',
     copySuffix: '복사본',
     menuHelp: '도움말',
     thirdPartyNotices: '타사 소프트웨어 고지',
     menuExportDocx: 'Word로 내보내기…',
-    pdfDocxLoginMsg: 'Word로 내보내려면 Genspark 로그인이 필요합니다.',
-    pdfDocxLoginDetail:
-      '“로그인”을 클릭하면 브라우저에서 인증합니다. 완료 후 내보내기를 다시 클릭하세요.',
-    pdfDocxBtnLogin: '로그인',
-    pdfDocxConfirmMsg: '이 PDF를 Genspark 클라우드에 업로드하여 Word로 변환할까요?',
-    pdfDocxConfirmDetail:
-      '변환에는 5 크레딧이 소모됩니다. 파일은 클라우드로 업로드되어 처리됩니다.',
-    pdfDocxConfirmBalance: '현재 잔액: {balance} 크레딧.',
-    pdfDocxBtnConvert: '계속',
     btnCancel: '취소',
     pdfDocxFailedMsg: 'Word로 내보내기 실패',
-    pdfDocxNoCliMsg:
-      'Genspark에 로그인할 수 없습니다. 필수 구성 요소(gsk)가 없습니다. 앱을 다시 설치해 주세요.',
     pdfDocxBusyMsg: 'Word 내보내기가 이미 진행 중입니다. 완료될 때까지 기다려 주세요.',
-    menuExportDocxLocal: 'Word로 내보내기(로컬 변환)…',
-    menuExportDocxCloud: 'Word로 내보내기(클라우드 변환)…',
     menuExportPptx: 'PowerPoint로 내보내기…',
     pdfPptxFailedMsg: 'PowerPoint 내보내기 실패',
     pdfPptxBusyMsg: '변환이 진행 중입니다. 현재 내보내기가 완료될 때까지 기다려 주세요.',
@@ -812,7 +1162,7 @@ const tMain = createI18n({
       '{pages} 페이지는 셀로 변환할 수 없어 해당 워크시트에 알림 행을 기록했습니다.',
     pdfDocxLocalScannedMsg: '스캔 문서가 감지되었습니다',
     pdfDocxLocalScannedDetail:
-      '로컬 변환은 모양을 유지하기 위해 각 페이지를 이미지로 내보냈습니다. 편집 가능한 텍스트가 필요하면 클라우드 변환(OCR 지원)을 사용하세요.',
+      '모양을 유지하기 위해 각 페이지를 이미지로 내보냈습니다. 편집 가능한 텍스트를 인식할 수 없었습니다.',
     pdfDocxLocalDegradedMsg: '일부 페이지가 이미지로 내보내졌습니다',
     pdfDocxLocalDegradedDetail:
       '{pages}쪽은 레이아웃을 안정적으로 재구성할 수 없어 전체 페이지 이미지로 내보냈습니다.',
@@ -822,7 +1172,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       '이 PDF는 암호화되어 있으며 올바른 비밀번호가 없어 변환할 수 없습니다.',
     pdfDocxLocalUnsupportedEncDetail:
-      '이 PDF는 인증서 기반이거나 지원되지 않는 암호화 방식을 사용하므로 로컬에서 변환할 수 없습니다. 클라우드 변환을 사용해 보세요.',
+      '이 PDF는 인증서 기반이거나 지원되지 않는 암호화 방식을 사용하므로 변환할 수 없습니다.',
     pdfPwdTitle: '비밀번호 입력',
     pdfPwdPrompt: '이 PDF는 암호화되어 있습니다. 열기 위한 비밀번호를 입력하세요:',
     pdfPwdRetryPrompt: '비밀번호가 올바르지 않습니다. 다시 시도하세요.',
@@ -837,19 +1187,31 @@ const tMain = createI18n({
     errSaveDirUnusable: '선택한 폴더에 쓸 수 없어 기본 저장 위치로 사용할 수 없습니다',
   },
   fr: {
+    dlgAddFolderRoot: "Ajouter un dossier à l'accueil",
+    watchdogTitle: 'Le document consomme trop de ressources',
+    watchdogBody:
+      '« {title} » utilise beaucoup de mémoire ou de processeur depuis plusieurs minutes ({memory} Mo, {cpu} % CPU). Vous pouvez continuer à attendre ou fermer ce document (il vous sera d’abord demandé d’enregistrer les modifications non sauvegardées). Les diagnostics ont été enregistrés.',
+    watchdogWait: 'Continuer d’attendre',
+    watchdogClose: 'Fermer le document',
+    errFolderRootUnusable: 'Le dossier sélectionné ne peut pas être lu',
     menuFile: 'Fichier',
     menuSectionNew: 'Nouveau',
+    menuOpenInNewWindow: 'Ouvrir dans une nouvelle fenêtre',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Feuille de calcul sans titre',
     untitledDoc: 'Document sans titre',
     untitledDeck: 'Présentation sans titre',
     untitledMarkdown: 'Markdown sans titre',
+    untitledHtml: 'HTML sans titre',
     untitledPdf: 'PDF sans titre',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exporter en PDF…',
+    menuExportImages: 'Exporter en images…',
+    menuExportHtml: 'Exporter en HTML (fichier unique)…',
     menuOpenInDocs: 'Convertir et ouvrir dans Docs',
     menuPrint: 'Imprimer…',
     menuOpen: 'Ouvrir…',
@@ -866,34 +1228,24 @@ const tMain = createI18n({
     filterExcel: 'Classeurs Excel',
     filterPpt: 'Présentations PowerPoint',
     filterMarkdown: 'Documents Markdown',
+    filterHtml: 'Documents HTML',
     filterPdf: 'Documents PDF',
     errBadArgs: 'Arguments non valides',
     errBadName: 'Nom de fichier non valide',
     errMissing: 'Fichier introuvable',
     errExists: 'Un fichier du même nom existe déjà',
     errRenameFailed: 'Échec du renommage',
+    errPdfSaveAsFailed: 'Impossible d’enregistrer la copie du PDF',
     errNewTabFailed: 'Impossible de créer le nouveau document',
+    errDuplicateFailed: 'Impossible de dupliquer le fichier',
     errUnsupportedExt: 'les fichiers .{ext} ne sont pas pris en charge',
     copySuffix: 'copie',
     menuHelp: 'Aide',
     thirdPartyNotices: 'Mentions relatives aux logiciels tiers',
     menuExportDocx: 'Exporter en Word…',
-    pdfDocxLoginMsg: "L'export en Word nécessite une connexion à Genspark.",
-    pdfDocxLoginDetail:
-      "Cliquez sur « Se connecter » pour autoriser dans le navigateur, puis relancez l'export.",
-    pdfDocxBtnLogin: 'Se connecter',
-    pdfDocxConfirmMsg: 'Téléverser ce PDF vers le cloud Genspark pour le convertir en Word ?',
-    pdfDocxConfirmDetail:
-      'La conversion coûte 5 crédits. Le fichier sera téléversé pour traitement dans le cloud.',
-    pdfDocxConfirmBalance: 'Solde actuel : {balance} crédits.',
-    pdfDocxBtnConvert: 'Continuer',
     btnCancel: 'Annuler',
     pdfDocxFailedMsg: "Échec de l'export en Word",
-    pdfDocxNoCliMsg:
-      "Connexion à Genspark impossible : un composant requis (gsk) est manquant. Veuillez réinstaller l'application.",
     pdfDocxBusyMsg: "Un export en Word est déjà en cours. Veuillez attendre qu'il se termine.",
-    menuExportDocxLocal: 'Exporter en Word (local)…',
-    menuExportDocxCloud: 'Exporter en Word (cloud)…',
     menuExportPptx: 'Exporter en PowerPoint…',
     pdfPptxFailedMsg: "Échec de l'exportation en PowerPoint",
     pdfPptxBusyMsg: "Une exportation est déjà en cours. Veuillez attendre qu'elle se termine.",
@@ -909,7 +1261,7 @@ const tMain = createI18n({
       "Les pages {pages} n'ont pas pu être converties en cellules ; leurs feuilles contiennent une ligne d'avertissement.",
     pdfDocxLocalScannedMsg: 'Document numérisé détecté',
     pdfDocxLocalScannedDetail:
-      "La conversion locale a exporté les pages sous forme d'images pour préserver leur apparence. Pour un texte modifiable, utilisez la conversion cloud (avec OCR).",
+      "Les pages ont été exportées sous forme d'images pour préserver leur apparence ; aucun texte modifiable n'a pu être reconnu.",
     pdfDocxLocalDegradedMsg: 'Certaines pages ont été exportées en images',
     pdfDocxLocalDegradedDetail:
       "Les pages {pages} n'ont pas pu être reconstruites de manière fiable et ont été exportées en images pleine page.",
@@ -919,7 +1271,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       "Ce PDF est chiffré et n'a pas pu être ouvert sans le mot de passe correct.",
     pdfDocxLocalUnsupportedEncDetail:
-      'Ce PDF utilise un chiffrement par certificat ou un chiffrement non pris en charge et ne peut pas être converti localement. Essayez la conversion cloud.',
+      'Ce PDF utilise un chiffrement par certificat ou un chiffrement non pris en charge et ne peut pas être converti.',
     pdfPwdTitle: 'Saisir le mot de passe',
     pdfPwdPrompt: "Ce PDF est chiffré. Saisissez le mot de passe pour l'ouvrir :",
     pdfPwdRetryPrompt: 'Mot de passe incorrect. Veuillez réessayer.',
@@ -936,19 +1288,31 @@ const tMain = createI18n({
       "Le dossier sélectionné n'est pas accessible en écriture et ne peut pas servir d'emplacement d'enregistrement par défaut",
   },
   de: {
+    dlgAddFolderRoot: 'Ordner zur Startseite hinzufügen',
+    watchdogTitle: 'Dokument beansprucht zu viele Ressourcen',
+    watchdogBody:
+      '„{title}“ belegt seit mehreren Minuten viel Arbeitsspeicher oder CPU ({memory} MB, {cpu} % CPU). Sie können weiter warten oder das Dokument schließen (bei ungespeicherten Änderungen werden Sie zuerst zum Speichern gefragt). Diagnosedaten wurden aufgezeichnet.',
+    watchdogWait: 'Weiter warten',
+    watchdogClose: 'Dokument schließen',
+    errFolderRootUnusable: 'Der ausgewählte Ordner kann nicht gelesen werden',
     menuFile: 'Datei',
     menuSectionNew: 'Neu',
+    menuOpenInNewWindow: 'In neuem Fenster öffnen',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Unbenannte Tabelle',
     untitledDoc: 'Unbenanntes Dokument',
     untitledDeck: 'Unbenannte Präsentation',
     untitledMarkdown: 'Unbenanntes Markdown',
+    untitledHtml: 'Unbenanntes HTML',
     untitledPdf: 'Unbenanntes PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Als PDF exportieren…',
+    menuExportImages: 'Als Bilder exportieren…',
+    menuExportHtml: 'Als Einzeldatei-HTML exportieren…',
     menuOpenInDocs: 'In Docs umwandeln und öffnen',
     menuPrint: 'Drucken…',
     menuOpen: 'Öffnen…',
@@ -965,34 +1329,24 @@ const tMain = createI18n({
     filterExcel: 'Excel-Arbeitsmappen',
     filterPpt: 'PowerPoint-Präsentationen',
     filterMarkdown: 'Markdown-Dokumente',
+    filterHtml: 'HTML-Dokumente',
     filterPdf: 'PDF-Dokumente',
     errBadArgs: 'Ungültige Argumente',
     errBadName: 'Ungültiger Dateiname',
     errMissing: 'Datei nicht gefunden',
     errExists: 'Eine Datei mit diesem Namen existiert bereits',
     errRenameFailed: 'Umbenennen fehlgeschlagen',
+    errPdfSaveAsFailed: 'Die PDF-Kopie konnte nicht gespeichert werden',
     errNewTabFailed: 'Neues Dokument konnte nicht erstellt werden',
+    errDuplicateFailed: 'Datei konnte nicht dupliziert werden',
     errUnsupportedExt: '.{ext}-Dateien werden nicht unterstützt',
     copySuffix: 'Kopie',
     menuHelp: 'Hilfe',
     thirdPartyNotices: 'Hinweise zu Drittanbietersoftware',
     menuExportDocx: 'Als Word exportieren…',
-    pdfDocxLoginMsg: 'Für den Word-Export ist eine Anmeldung bei Genspark erforderlich.',
-    pdfDocxLoginDetail:
-      'Klicken Sie auf „Anmelden“, um die Autorisierung im Browser abzuschließen, und starten Sie den Export danach erneut.',
-    pdfDocxBtnLogin: 'Anmelden',
-    pdfDocxConfirmMsg: 'Dieses PDF in die Genspark-Cloud hochladen und in Word konvertieren?',
-    pdfDocxConfirmDetail:
-      'Die Konvertierung kostet 5 Credits. Die Datei wird zur Verarbeitung in die Cloud hochgeladen.',
-    pdfDocxConfirmBalance: 'Aktuelles Guthaben: {balance} Credits.',
-    pdfDocxBtnConvert: 'Fortfahren',
     btnCancel: 'Abbrechen',
     pdfDocxFailedMsg: 'Word-Export fehlgeschlagen',
-    pdfDocxNoCliMsg:
-      'Anmeldung bei Genspark nicht möglich: Eine erforderliche Komponente (gsk) fehlt. Bitte installieren Sie die App neu.',
     pdfDocxBusyMsg: 'Ein Word-Export läuft bereits. Bitte warten Sie, bis er abgeschlossen ist.',
-    menuExportDocxLocal: 'Als Word exportieren (lokal)…',
-    menuExportDocxCloud: 'Als Word exportieren (Cloud)…',
     menuExportPptx: 'Als PowerPoint exportieren…',
     pdfPptxFailedMsg: 'Export als PowerPoint fehlgeschlagen',
     pdfPptxBusyMsg: 'Ein Export läuft bereits. Bitte warten Sie, bis er abgeschlossen ist.',
@@ -1008,7 +1362,7 @@ const tMain = createI18n({
       'Die Seiten {pages} konnten nicht in Zellen umgewandelt werden; ihre Arbeitsblätter enthalten stattdessen eine Hinweiszeile.',
     pdfDocxLocalScannedMsg: 'Gescanntes Dokument erkannt',
     pdfDocxLocalScannedDetail:
-      'Die lokale Konvertierung hat die Seiten als Bilder exportiert, um ihr Aussehen zu erhalten. Für bearbeitbaren Text nutzen Sie die Cloud-Konvertierung (mit OCR).',
+      'Die Seiten wurden als Bilder exportiert, um ihr Aussehen zu erhalten. Es konnte kein bearbeitbarer Text erkannt werden.',
     pdfDocxLocalDegradedMsg: 'Einige Seiten wurden als Bilder exportiert',
     pdfDocxLocalDegradedDetail:
       'Seite(n) {pages} konnten nicht zuverlässig rekonstruiert werden und wurden als ganzseitige Bilder exportiert.',
@@ -1018,7 +1372,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'Diese PDF ist verschlüsselt und konnte ohne das richtige Passwort nicht geöffnet werden.',
     pdfDocxLocalUnsupportedEncDetail:
-      'Diese PDF verwendet eine zertifikatsbasierte oder nicht unterstützte Verschlüsselung und kann nicht lokal konvertiert werden. Versuchen Sie die Cloud-Konvertierung.',
+      'Diese PDF verwendet eine zertifikatsbasierte oder nicht unterstützte Verschlüsselung und kann nicht konvertiert werden.',
     pdfPwdTitle: 'Passwort eingeben',
     pdfPwdPrompt: 'Diese PDF ist verschlüsselt. Geben Sie das Passwort zum Öffnen ein:',
     pdfPwdRetryPrompt: 'Falsches Passwort. Bitte versuchen Sie es erneut.',
@@ -1035,19 +1389,31 @@ const tMain = createI18n({
       'Der ausgewählte Ordner ist nicht beschreibbar und kann nicht als Standard-Speicherort verwendet werden',
   },
   es: {
+    dlgAddFolderRoot: 'Añadir carpeta al inicio',
+    watchdogTitle: 'El documento consume demasiados recursos',
+    watchdogBody:
+      '«{title}» lleva varios minutos usando mucha memoria o CPU ({memory} MB, {cpu} % de CPU). Puedes seguir esperando o cerrar el documento (antes se te pedirá guardar los cambios sin guardar). Se ha registrado el diagnóstico.',
+    watchdogWait: 'Seguir esperando',
+    watchdogClose: 'Cerrar documento',
+    errFolderRootUnusable: 'No se puede leer la carpeta seleccionada',
     menuFile: 'Archivo',
     menuSectionNew: 'Nuevo',
+    menuOpenInNewWindow: 'Abrir en una ventana nueva',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Hoja de cálculo sin título',
     untitledDoc: 'Documento sin título',
     untitledDeck: 'Presentación sin título',
     untitledMarkdown: 'Markdown sin título',
+    untitledHtml: 'HTML sin título',
     untitledPdf: 'PDF sin título',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exportar como PDF…',
+    menuExportImages: 'Exportar como imágenes…',
+    menuExportHtml: 'Exportar como HTML de archivo único…',
     menuOpenInDocs: 'Convertir y abrir en Docs',
     menuPrint: 'Imprimir…',
     menuOpen: 'Abrir…',
@@ -1064,34 +1430,24 @@ const tMain = createI18n({
     filterExcel: 'Libros de Excel',
     filterPpt: 'Presentaciones de PowerPoint',
     filterMarkdown: 'Documentos Markdown',
+    filterHtml: 'Documentos HTML',
     filterPdf: 'Documentos PDF',
     errBadArgs: 'Argumentos no válidos',
     errBadName: 'Nombre de archivo no válido',
     errMissing: 'Archivo no encontrado',
     errExists: 'Ya existe un archivo con ese nombre',
     errRenameFailed: 'No se pudo cambiar el nombre',
+    errPdfSaveAsFailed: 'No se pudo guardar la copia del PDF',
     errNewTabFailed: 'No se pudo crear el nuevo documento',
+    errDuplicateFailed: 'No se pudo duplicar el archivo',
     errUnsupportedExt: 'los archivos .{ext} no son compatibles',
     copySuffix: 'copia',
     menuHelp: 'Ayuda',
     thirdPartyNotices: 'Avisos de software de terceros',
     menuExportDocx: 'Exportar como Word…',
-    pdfDocxLoginMsg: 'Para exportar como Word es necesario iniciar sesión en Genspark.',
-    pdfDocxLoginDetail:
-      'Al hacer clic en «Iniciar sesión» se abrirá el navegador para autorizar; después, vuelve a hacer clic en Exportar.',
-    pdfDocxBtnLogin: 'Iniciar sesión',
-    pdfDocxConfirmMsg: '¿Subir este PDF a la nube de Genspark para convertirlo a Word?',
-    pdfDocxConfirmDetail:
-      'La conversión cuesta 5 créditos. El archivo se subirá para procesarse en la nube.',
-    pdfDocxConfirmBalance: 'Saldo actual: {balance} créditos.',
-    pdfDocxBtnConvert: 'Continuar',
     btnCancel: 'Cancelar',
     pdfDocxFailedMsg: 'Error al exportar como Word',
-    pdfDocxNoCliMsg:
-      'No se puede iniciar sesión en Genspark: falta un componente necesario (gsk). Reinstale la aplicación.',
     pdfDocxBusyMsg: 'Ya hay una exportación a Word en curso. Espera a que termine.',
-    menuExportDocxLocal: 'Exportar como Word (local)…',
-    menuExportDocxCloud: 'Exportar como Word (nube)…',
     menuExportPptx: 'Exportar como PowerPoint…',
     pdfPptxFailedMsg: 'Error al exportar como PowerPoint',
     pdfPptxBusyMsg: 'Ya hay una exportación en curso. Espere a que termine.',
@@ -1107,7 +1463,7 @@ const tMain = createI18n({
       'Las páginas {pages} no se pudieron convertir en celdas; sus hojas incluyen una fila de aviso.',
     pdfDocxLocalScannedMsg: 'Documento escaneado detectado',
     pdfDocxLocalScannedDetail:
-      'La conversión local exportó las páginas como imágenes para conservar su aspecto. Para texto editable, usa la conversión en la nube (con OCR).',
+      'Las páginas se exportaron como imágenes para conservar su aspecto. No se pudo reconocer texto editable.',
     pdfDocxLocalDegradedMsg: 'Algunas páginas se exportaron como imágenes',
     pdfDocxLocalDegradedDetail:
       'Las páginas {pages} no se pudieron reconstruir de forma fiable y se exportaron como imágenes de página completa.',
@@ -1117,7 +1473,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'Este PDF está cifrado y no se pudo abrir sin la contraseña correcta.',
     pdfDocxLocalUnsupportedEncDetail:
-      'Este PDF usa cifrado basado en certificados u otro cifrado no compatible y no se puede convertir localmente. Prueba la conversión en la nube.',
+      'Este PDF usa cifrado basado en certificados u otro cifrado no compatible y no se puede convertir.',
     pdfPwdTitle: 'Introducir contraseña',
     pdfPwdPrompt: 'Este PDF está cifrado. Introduzca la contraseña para abrirlo:',
     pdfPwdRetryPrompt: 'Contraseña incorrecta. Inténtelo de nuevo.',
@@ -1134,19 +1490,31 @@ const tMain = createI18n({
       'La carpeta seleccionada no admite escritura y no puede usarse como ubicación de guardado predeterminada',
   },
   th: {
+    dlgAddFolderRoot: 'เพิ่มโฟลเดอร์ไปยังหน้าแรก',
+    watchdogTitle: 'เอกสารใช้ทรัพยากรมากเกินไป',
+    watchdogBody:
+      '"{title}" ใช้หน่วยความจำหรือ CPU จำนวนมากติดต่อกันหลายนาที (หน่วยความจำ {memory} MB, CPU {cpu}%) คุณสามารถรอต่อไปหรือปิดเอกสารนี้ได้ (หากมีการเปลี่ยนแปลงที่ยังไม่บันทึกจะถามให้บันทึกก่อน) บันทึกข้อมูลวินิจฉัยแล้ว',
+    watchdogWait: 'รอต่อไป',
+    watchdogClose: 'ปิดเอกสาร',
+    errFolderRootUnusable: 'ไม่สามารถอ่านโฟลเดอร์ที่เลือกได้',
     menuFile: 'ไฟล์',
     menuSectionNew: 'สร้างใหม่',
+    menuOpenInNewWindow: 'เปิดในหน้าต่างใหม่',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'สเปรดชีตไม่มีชื่อ',
     untitledDoc: 'เอกสารไม่มีชื่อ',
     untitledDeck: 'งานนำเสนอไม่มีชื่อ',
     untitledMarkdown: 'Markdown ไม่มีชื่อ',
+    untitledHtml: 'HTML ไม่มีชื่อ',
     untitledPdf: 'PDF ไม่มีชื่อ',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'ส่งออกเป็น PDF…',
+    menuExportImages: 'ส่งออกเป็นรูปภาพ…',
+    menuExportHtml: 'ส่งออกเป็น HTML ไฟล์เดียว…',
     menuOpenInDocs: 'แปลงและเปิดใน Docs',
     menuPrint: 'พิมพ์…',
     menuOpen: 'เปิด…',
@@ -1163,33 +1531,24 @@ const tMain = createI18n({
     filterExcel: 'เวิร์กบุ๊ก Excel',
     filterPpt: 'งานนำเสนอ PowerPoint',
     filterMarkdown: 'เอกสาร Markdown',
+    filterHtml: 'เอกสาร HTML',
     filterPdf: 'เอกสาร PDF',
     errBadArgs: 'อาร์กิวเมนต์ไม่ถูกต้อง',
     errBadName: 'ชื่อไฟล์ไม่ถูกต้อง',
     errMissing: 'ไม่พบไฟล์',
     errExists: 'มีไฟล์ชื่อเดียวกันอยู่แล้ว',
     errRenameFailed: 'เปลี่ยนชื่อไม่สำเร็จ',
+    errPdfSaveAsFailed: 'บันทึกสำเนา PDF ไม่สำเร็จ',
     errNewTabFailed: 'สร้างเอกสารใหม่ไม่สำเร็จ',
+    errDuplicateFailed: 'ไม่สามารถทำสำเนาไฟล์ได้',
     errUnsupportedExt: 'ไม่รองรับไฟล์ .{ext}',
     copySuffix: 'สำเนา',
     menuHelp: 'วิธีใช้',
     thirdPartyNotices: 'ประกาศเกี่ยวกับซอฟต์แวร์ของบุคคลที่สาม',
     menuExportDocx: 'ส่งออกเป็น Word…',
-    pdfDocxLoginMsg: 'การส่งออกเป็น Word ต้องเข้าสู่ระบบ Genspark',
-    pdfDocxLoginDetail:
-      'คลิก “เข้าสู่ระบบ” เพื่อเปิดเบราว์เซอร์ยืนยันตัวตน เสร็จแล้วให้คลิกส่งออกอีกครั้ง',
-    pdfDocxBtnLogin: 'เข้าสู่ระบบ',
-    pdfDocxConfirmMsg: 'อัปโหลด PDF นี้ไปยังคลาวด์ Genspark เพื่อแปลงเป็น Word หรือไม่?',
-    pdfDocxConfirmDetail: 'การแปลงใช้ 5 เครดิต ไฟล์จะถูกอัปโหลดเพื่อประมวลผลบนคลาวด์',
-    pdfDocxConfirmBalance: 'ยอดคงเหลือปัจจุบัน: {balance} เครดิต',
-    pdfDocxBtnConvert: 'ดำเนินการต่อ',
     btnCancel: 'ยกเลิก',
     pdfDocxFailedMsg: 'ส่งออกเป็น Word ไม่สำเร็จ',
-    pdfDocxNoCliMsg:
-      'ไม่สามารถลงชื่อเข้าใช้ Genspark ได้: ไม่พบคอมโพเนนต์ที่จำเป็น (gsk) โปรดติดตั้งแอปใหม่',
     pdfDocxBusyMsg: 'กำลังส่งออกเป็น Word อยู่ โปรดรอให้เสร็จสิ้นก่อน',
-    menuExportDocxLocal: 'ส่งออกเป็น Word (แปลงในเครื่อง)…',
-    menuExportDocxCloud: 'ส่งออกเป็น Word (แปลงบนคลาวด์)…',
     menuExportPptx: 'ส่งออกเป็น PowerPoint…',
     pdfPptxFailedMsg: 'การส่งออกเป็น PowerPoint ล้มเหลว',
     pdfPptxBusyMsg: 'กำลังแปลงอยู่ โปรดรอให้การส่งออกปัจจุบันเสร็จสิ้น',
@@ -1204,7 +1563,7 @@ const tMain = createI18n({
       'หน้า {pages} ไม่สามารถแปลงเป็นเซลล์ได้ เวิร์กชีตของหน้าดังกล่าวมีแถวแจ้งเตือนแทน',
     pdfDocxLocalScannedMsg: 'ตรวจพบเอกสารสแกน',
     pdfDocxLocalScannedDetail:
-      'การแปลงในเครื่องได้ส่งออกแต่ละหน้าเป็นรูปภาพเพื่อคงรูปลักษณ์เดิม หากต้องการข้อความที่แก้ไขได้ โปรดใช้การแปลงบนคลาวด์ (รองรับ OCR)',
+      'ส่งออกแต่ละหน้าเป็นรูปภาพเพื่อคงรูปลักษณ์เดิม ไม่สามารถจดจำข้อความที่แก้ไขได้',
     pdfDocxLocalDegradedMsg: 'บางหน้าถูกส่งออกเป็นรูปภาพ',
     pdfDocxLocalDegradedDetail:
       'หน้า {pages} ไม่สามารถสร้างเลย์เอาต์ใหม่ได้อย่างน่าเชื่อถือ จึงส่งออกเป็นรูปภาพทั้งหน้า',
@@ -1213,7 +1572,7 @@ const tMain = createI18n({
       'หน้า {pages} เป็นภาพสแกน ระบบกู้คืนข้อความด้วย OCR ในเครื่องแล้ว โปรดตรวจทานผลลัพธ์',
     pdfDocxLocalEncryptedDetail: 'PDF นี้ถูกเข้ารหัสและไม่สามารถเปิดได้โดยไม่มีรหัสผ่านที่ถูกต้อง',
     pdfDocxLocalUnsupportedEncDetail:
-      'PDF นี้ใช้การเข้ารหัสแบบใบรับรองหรือการเข้ารหัสที่ไม่รองรับ จึงไม่สามารถแปลงในเครื่องได้ ลองใช้การแปลงบนคลาวด์แทน',
+      'PDF นี้ใช้การเข้ารหัสแบบใบรับรองหรือการเข้ารหัสที่ไม่รองรับ จึงไม่สามารถแปลงได้',
     pdfPwdTitle: 'ป้อนรหัสผ่าน',
     pdfPwdPrompt: 'PDF นี้ถูกเข้ารหัส โปรดป้อนรหัสผ่านเพื่อเปิด:',
     pdfPwdRetryPrompt: 'รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง',
@@ -1228,19 +1587,31 @@ const tMain = createI18n({
     errSaveDirUnusable: 'โฟลเดอร์ที่เลือกไม่สามารถเขียนได้ จึงใช้เป็นตำแหน่งบันทึกเริ่มต้นไม่ได้',
   },
   id: {
+    dlgAddFolderRoot: 'Tambahkan Folder ke Beranda',
+    watchdogTitle: 'Dokumen menggunakan terlalu banyak sumber daya',
+    watchdogBody:
+      '"{title}" telah menggunakan banyak memori atau CPU selama beberapa menit ({memory} MB, CPU {cpu}%). Anda dapat terus menunggu atau menutup dokumen ini (perubahan yang belum disimpan akan ditanyakan lebih dulu). Diagnostik telah dicatat.',
+    watchdogWait: 'Terus Menunggu',
+    watchdogClose: 'Tutup Dokumen',
+    errFolderRootUnusable: 'Folder yang dipilih tidak dapat dibaca',
     menuFile: 'File',
     menuSectionNew: 'Baru',
+    menuOpenInNewWindow: 'Buka di Jendela Baru',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Spreadsheet tanpa judul',
     untitledDoc: 'Dokumen tanpa judul',
     untitledDeck: 'Presentasi tanpa judul',
     untitledMarkdown: 'Markdown tanpa judul',
+    untitledHtml: 'HTML tanpa judul',
     untitledPdf: 'PDF tanpa judul',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Ekspor sebagai PDF…',
+    menuExportImages: 'Ekspor sebagai gambar…',
+    menuExportHtml: 'Ekspor sebagai HTML satu file…',
     menuOpenInDocs: 'Konversi dan buka di Docs',
     menuPrint: 'Cetak…',
     menuOpen: 'Buka…',
@@ -1257,34 +1628,24 @@ const tMain = createI18n({
     filterExcel: 'Buku Kerja Excel',
     filterPpt: 'Presentasi PowerPoint',
     filterMarkdown: 'Dokumen Markdown',
+    filterHtml: 'Dokumen HTML',
     filterPdf: 'Dokumen PDF',
     errBadArgs: 'Argumen tidak valid',
     errBadName: 'Nama file tidak valid',
     errMissing: 'File tidak ditemukan',
     errExists: 'File dengan nama tersebut sudah ada',
     errRenameFailed: 'Gagal mengganti nama',
+    errPdfSaveAsFailed: 'Gagal menyimpan salinan PDF',
     errNewTabFailed: 'Gagal membuat dokumen baru',
+    errDuplicateFailed: 'Tidak dapat menduplikasi berkas',
     errUnsupportedExt: 'file .{ext} tidak didukung',
     copySuffix: 'salinan',
     menuHelp: 'Bantuan',
     thirdPartyNotices: 'Pemberitahuan Perangkat Lunak Pihak Ketiga',
     menuExportDocx: 'Ekspor sebagai Word…',
-    pdfDocxLoginMsg: 'Ekspor sebagai Word memerlukan login ke Genspark.',
-    pdfDocxLoginDetail:
-      'Klik “Masuk” untuk membuka browser dan memberi otorisasi; setelah selesai, klik Ekspor lagi.',
-    pdfDocxBtnLogin: 'Masuk',
-    pdfDocxConfirmMsg: 'Unggah PDF ini ke cloud Genspark untuk dikonversi ke Word?',
-    pdfDocxConfirmDetail:
-      'Konversi ini menggunakan 5 kredit. File akan diunggah untuk diproses di cloud.',
-    pdfDocxConfirmBalance: 'Saldo saat ini: {balance} kredit.',
-    pdfDocxBtnConvert: 'Lanjutkan',
     btnCancel: 'Batal',
     pdfDocxFailedMsg: 'Gagal mengekspor sebagai Word',
-    pdfDocxNoCliMsg:
-      'Tidak dapat masuk ke Genspark: komponen yang diperlukan (gsk) tidak ditemukan. Silakan instal ulang aplikasi.',
     pdfDocxBusyMsg: 'Ekspor ke Word sedang berlangsung. Harap tunggu hingga selesai.',
-    menuExportDocxLocal: 'Ekspor sebagai Word (lokal)…',
-    menuExportDocxCloud: 'Ekspor sebagai Word (cloud)…',
     menuExportPptx: 'Ekspor sebagai PowerPoint…',
     pdfPptxFailedMsg: 'Gagal mengekspor sebagai PowerPoint',
     pdfPptxBusyMsg: 'Ekspor sedang berlangsung. Harap tunggu hingga selesai.',
@@ -1300,7 +1661,7 @@ const tMain = createI18n({
       'Halaman {pages} tidak dapat diubah menjadi sel; lembar kerjanya berisi baris pemberitahuan.',
     pdfDocxLocalScannedMsg: 'Dokumen hasil pindaian terdeteksi',
     pdfDocxLocalScannedDetail:
-      'Konversi lokal mengekspor halaman sebagai gambar untuk mempertahankan tampilannya. Untuk teks yang dapat diedit, gunakan konversi cloud (dengan OCR).',
+      'Halaman diekspor sebagai gambar untuk mempertahankan tampilannya. Tidak ada teks yang dapat diedit yang berhasil dikenali.',
     pdfDocxLocalDegradedMsg: 'Beberapa halaman diekspor sebagai gambar',
     pdfDocxLocalDegradedDetail:
       'Halaman {pages} tidak dapat direkonstruksi dengan andal dan diekspor sebagai gambar satu halaman penuh.',
@@ -1310,7 +1671,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'PDF ini terenkripsi dan tidak dapat dibuka tanpa kata sandi yang benar.',
     pdfDocxLocalUnsupportedEncDetail:
-      'PDF ini menggunakan enkripsi berbasis sertifikat atau enkripsi yang tidak didukung dan tidak dapat dikonversi secara lokal. Coba konversi cloud.',
+      'PDF ini menggunakan enkripsi berbasis sertifikat atau enkripsi yang tidak didukung dan tidak dapat dikonversi.',
     pdfPwdTitle: 'Masukkan Kata Sandi',
     pdfPwdPrompt: 'PDF ini terenkripsi. Masukkan kata sandi untuk membukanya:',
     pdfPwdRetryPrompt: 'Kata sandi salah. Silakan coba lagi.',
@@ -1327,19 +1688,31 @@ const tMain = createI18n({
       'Folder yang dipilih tidak dapat ditulis dan tidak bisa digunakan sebagai lokasi penyimpanan default',
   },
   ru: {
+    dlgAddFolderRoot: 'Добавить папку на главную',
+    watchdogTitle: 'Документ потребляет слишком много ресурсов',
+    watchdogBody:
+      '«{title}» уже несколько минут использует много памяти или процессора ({memory} МБ, {cpu}% CPU). Можно подождать ещё или закрыть документ (при несохранённых изменениях сначала будет предложено сохранить). Диагностика записана.',
+    watchdogWait: 'Подождать',
+    watchdogClose: 'Закрыть документ',
+    errFolderRootUnusable: 'Не удалось прочитать выбранную папку',
     menuFile: 'Файл',
     menuSectionNew: 'Создать',
+    menuOpenInNewWindow: 'Открыть в новом окне',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Таблица без названия',
     untitledDoc: 'Документ без названия',
     untitledDeck: 'Презентация без названия',
     untitledMarkdown: 'Markdown без названия',
+    untitledHtml: 'HTML без названия',
     untitledPdf: 'PDF без названия',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Экспортировать в PDF…',
+    menuExportImages: 'Экспорт в изображения…',
+    menuExportHtml: 'Экспортировать в один файл HTML…',
     menuOpenInDocs: 'Преобразовать и открыть в Docs',
     menuPrint: 'Печать…',
     menuOpen: 'Открыть…',
@@ -1356,34 +1729,24 @@ const tMain = createI18n({
     filterExcel: 'Книги Excel',
     filterPpt: 'Презентации PowerPoint',
     filterMarkdown: 'Документы Markdown',
+    filterHtml: 'Документы HTML',
     filterPdf: 'Документы PDF',
     errBadArgs: 'Недопустимые аргументы',
     errBadName: 'Недопустимое имя файла',
     errMissing: 'Файл не найден',
     errExists: 'Файл с таким именем уже существует',
     errRenameFailed: 'Не удалось переименовать',
+    errPdfSaveAsFailed: 'Не удалось сохранить копию PDF',
     errNewTabFailed: 'Не удалось создать новый документ',
+    errDuplicateFailed: 'Не удалось создать копию файла',
     errUnsupportedExt: 'файлы .{ext} не поддерживаются',
     copySuffix: 'копия',
     menuHelp: 'Справка',
     thirdPartyNotices: 'Уведомления о стороннем ПО',
     menuExportDocx: 'Экспортировать в Word…',
-    pdfDocxLoginMsg: 'Для экспорта в Word требуется вход в Genspark.',
-    pdfDocxLoginDetail:
-      'Нажмите «Войти», чтобы авторизоваться в браузере, затем снова запустите экспорт.',
-    pdfDocxBtnLogin: 'Войти',
-    pdfDocxConfirmMsg: 'Загрузить этот PDF в облако Genspark и конвертировать в Word?',
-    pdfDocxConfirmDetail:
-      'Конвертация стоит 5 кредитов. Файл будет загружен для обработки в облаке.',
-    pdfDocxConfirmBalance: 'Текущий баланс: {balance} кредитов.',
-    pdfDocxBtnConvert: 'Продолжить',
     btnCancel: 'Отмена',
     pdfDocxFailedMsg: 'Не удалось экспортировать в Word',
-    pdfDocxNoCliMsg:
-      'Не удаётся войти в Genspark: отсутствует необходимый компонент (gsk). Переустановите приложение.',
     pdfDocxBusyMsg: 'Экспорт в Word уже выполняется. Дождитесь его завершения.',
-    menuExportDocxLocal: 'Экспортировать в Word (локально)…',
-    menuExportDocxCloud: 'Экспортировать в Word (облако)…',
     menuExportPptx: 'Экспортировать в PowerPoint…',
     pdfPptxFailedMsg: 'Не удалось экспортировать в PowerPoint',
     pdfPptxBusyMsg: 'Экспорт уже выполняется. Дождитесь его завершения.',
@@ -1399,7 +1762,7 @@ const tMain = createI18n({
       'Страницы {pages} не удалось преобразовать в ячейки; на их листах добавлена строка с уведомлением.',
     pdfDocxLocalScannedMsg: 'Обнаружен отсканированный документ',
     pdfDocxLocalScannedDetail:
-      'Локальное преобразование экспортировало страницы как изображения, чтобы сохранить их вид. Для редактируемого текста используйте облачное преобразование (с OCR).',
+      'Страницы экспортированы как изображения, чтобы сохранить их вид. Редактируемый текст распознать не удалось.',
     pdfDocxLocalDegradedMsg: 'Некоторые страницы экспортированы как изображения',
     pdfDocxLocalDegradedDetail:
       'Страницы {pages} не удалось надёжно реконструировать; они экспортированы как полностраничные изображения.',
@@ -1409,7 +1772,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'Этот PDF зашифрован, и его не удалось открыть без правильного пароля.',
     pdfDocxLocalUnsupportedEncDetail:
-      'Этот PDF использует шифрование на основе сертификата или другое неподдерживаемое шифрование, локальное преобразование невозможно. Попробуйте облачное преобразование.',
+      'Этот PDF использует шифрование на основе сертификата или другое неподдерживаемое шифрование и не может быть преобразован.',
     pdfPwdTitle: 'Введите пароль',
     pdfPwdPrompt: 'Этот PDF зашифрован. Введите пароль, чтобы открыть его:',
     pdfPwdRetryPrompt: 'Неверный пароль. Попробуйте ещё раз.',
@@ -1426,19 +1789,31 @@ const tMain = createI18n({
       'Выбранная папка недоступна для записи и не может использоваться как папка сохранения по умолчанию',
   },
   ar: {
+    dlgAddFolderRoot: 'إضافة مجلد إلى الصفحة الرئيسية',
+    watchdogTitle: 'المستند يستهلك موارد كثيرة جدًا',
+    watchdogBody:
+      'يستهلك "{title}" قدرًا كبيرًا من الذاكرة أو المعالج منذ عدة دقائق (الذاكرة {memory} م.ب، المعالج {cpu}%). يمكنك مواصلة الانتظار أو إغلاق هذا المستند (سيُطلب حفظ التغييرات غير المحفوظة أولًا). تم تسجيل بيانات التشخيص.',
+    watchdogWait: 'مواصلة الانتظار',
+    watchdogClose: 'إغلاق المستند',
+    errFolderRootUnusable: 'لا يمكن قراءة المجلد المحدد',
     menuFile: 'ملف',
     menuSectionNew: 'جديد',
+    menuOpenInNewWindow: 'فتح في نافذة جديدة',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'جدول بيانات بلا عنوان',
     untitledDoc: 'مستند بدون عنوان',
     untitledDeck: 'عرض تقديمي بدون عنوان',
     untitledMarkdown: 'Markdown بدون عنوان',
+    untitledHtml: 'HTML بدون عنوان',
     untitledPdf: 'PDF بدون عنوان',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'تصدير بتنسيق PDF…',
+    menuExportImages: 'تصدير كصور…',
+    menuExportHtml: 'تصدير كملف HTML واحد…',
     menuOpenInDocs: 'التحويل والفتح في Docs',
     menuPrint: 'طباعة…',
     menuOpen: 'فتح…',
@@ -1455,33 +1830,24 @@ const tMain = createI18n({
     filterExcel: 'مصنفات Excel',
     filterPpt: 'عروض PowerPoint التقديمية',
     filterMarkdown: 'مستندات Markdown',
+    filterHtml: 'مستندات HTML',
     filterPdf: 'مستندات PDF',
     errBadArgs: 'وسيطات غير صالحة',
     errBadName: 'اسم ملف غير صالح',
     errMissing: 'الملف غير موجود',
     errExists: 'يوجد ملف بالاسم نفسه بالفعل',
     errRenameFailed: 'فشلت إعادة التسمية',
+    errPdfSaveAsFailed: 'تعذّر حفظ نسخة PDF',
     errNewTabFailed: 'تعذّر إنشاء المستند الجديد',
+    errDuplicateFailed: 'تعذر تكرار الملف',
     errUnsupportedExt: 'ملفات .{ext} غير مدعومة',
     copySuffix: 'نسخة',
     menuHelp: 'تعليمات',
     thirdPartyNotices: 'إشعارات برامج الجهات الخارجية',
     menuExportDocx: 'تصدير كملف Word…',
-    pdfDocxLoginMsg: 'يتطلب التصدير كملف Word تسجيل الدخول إلى Genspark.',
-    pdfDocxLoginDetail:
-      'انقر على «تسجيل الدخول» لفتح المتصفح وإتمام التفويض، ثم انقر على التصدير مرة أخرى.',
-    pdfDocxBtnLogin: 'تسجيل الدخول',
-    pdfDocxConfirmMsg: 'رفع هذا الـ PDF إلى سحابة Genspark وتحويله إلى Word؟',
-    pdfDocxConfirmDetail: 'يكلف التحويل 5 أرصدة. سيتم رفع الملف للمعالجة في السحابة.',
-    pdfDocxConfirmBalance: 'الرصيد الحالي: {balance} من الأرصدة.',
-    pdfDocxBtnConvert: 'متابعة',
     btnCancel: 'إلغاء',
     pdfDocxFailedMsg: 'فشل التصدير كملف Word',
-    pdfDocxNoCliMsg:
-      'تعذّر تسجيل الدخول إلى Genspark: المكوّن المطلوب (gsk) مفقود. يُرجى إعادة تثبيت التطبيق.',
     pdfDocxBusyMsg: 'يجري حاليًا تصدير إلى Word. يُرجى الانتظار حتى يكتمل.',
-    menuExportDocxLocal: 'تصدير كملف Word (تحويل محلي)…',
-    menuExportDocxCloud: 'تصدير كملف Word (تحويل سحابي)…',
     menuExportPptx: 'تصدير كملف PowerPoint…',
     pdfPptxFailedMsg: 'فشل التصدير كملف PowerPoint',
     pdfPptxBusyMsg: 'هناك عملية تصدير قيد التنفيذ. يرجى الانتظار حتى تكتمل.',
@@ -1496,7 +1862,7 @@ const tMain = createI18n({
       'تعذر تحويل الصفحات {pages} إلى خلايا؛ تحتوي أوراقها على صف تنبيه بدلاً من ذلك.',
     pdfDocxLocalScannedMsg: 'تم اكتشاف مستند ممسوح ضوئيًا',
     pdfDocxLocalScannedDetail:
-      'قام التحويل المحلي بتصدير الصفحات كصور للحفاظ على مظهرها. للحصول على نص قابل للتحرير، استخدم التحويل السحابي (مع OCR).',
+      'تم تصدير الصفحات كصور للحفاظ على مظهرها. لم يتم التعرف على أي نص قابل للتحرير.',
     pdfDocxLocalDegradedMsg: 'تم تصدير بعض الصفحات كصور',
     pdfDocxLocalDegradedDetail:
       'تعذّرت إعادة بناء الصفحات {pages} بشكل موثوق، وتم تصديرها كصور لكامل الصفحة.',
@@ -1505,7 +1871,7 @@ const tMain = createI18n({
       'الصفحات {pages} كانت صورًا ممسوحة؛ تم استرداد النص عبر OCR المحلي. يُرجى مراجعة النتيجة.',
     pdfDocxLocalEncryptedDetail: 'هذا الملف PDF مشفّر وتعذّر فتحه دون كلمة المرور الصحيحة.',
     pdfDocxLocalUnsupportedEncDetail:
-      'يستخدم ملف PDF هذا تشفيرًا قائمًا على الشهادات أو تشفيرًا غير مدعوم ولا يمكن تحويله محليًا. جرّب التحويل السحابي.',
+      'يستخدم ملف PDF هذا تشفيرًا قائمًا على الشهادات أو تشفيرًا غير مدعوم ولا يمكن تحويله.',
     pdfPwdTitle: 'إدخال كلمة المرور',
     pdfPwdPrompt: 'هذا الملف PDF مشفّر. أدخل كلمة المرور لفتحه:',
     pdfPwdRetryPrompt: 'كلمة المرور غير صحيحة. حاول مرة أخرى.',
@@ -1520,19 +1886,31 @@ const tMain = createI18n({
     errSaveDirUnusable: 'المجلد المحدد غير قابل للكتابة ولا يمكن استخدامه كموقع حفظ افتراضي',
   },
   pt: {
+    dlgAddFolderRoot: 'Adicionar pasta à página inicial',
+    watchdogTitle: 'O documento está a consumir demasiados recursos',
+    watchdogBody:
+      '"{title}" está a usar muita memória ou CPU há vários minutos ({memory} MB, {cpu}% de CPU). Pode continuar a aguardar ou fechar o documento (será pedido para guardar alterações não guardadas primeiro). O diagnóstico foi registado.',
+    watchdogWait: 'Continuar a aguardar',
+    watchdogClose: 'Fechar documento',
+    errFolderRootUnusable: 'Não é possível ler a pasta selecionada',
     menuFile: 'Arquivo',
     menuSectionNew: 'Novo',
+    menuOpenInNewWindow: 'Abrir em nova janela',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Planilha sem título',
     untitledDoc: 'Documento sem título',
     untitledDeck: 'Apresentação sem título',
     untitledMarkdown: 'Markdown sem título',
+    untitledHtml: 'HTML sem título',
     untitledPdf: 'PDF sem título',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exportar como PDF…',
+    menuExportImages: 'Exportar como imagens…',
+    menuExportHtml: 'Exportar como HTML de arquivo único…',
     menuOpenInDocs: 'Converter e abrir no Docs',
     menuPrint: 'Imprimir…',
     menuOpen: 'Abrir…',
@@ -1549,34 +1927,24 @@ const tMain = createI18n({
     filterExcel: 'Pastas de trabalho do Excel',
     filterPpt: 'Apresentações do PowerPoint',
     filterMarkdown: 'Documentos Markdown',
+    filterHtml: 'Documentos HTML',
     filterPdf: 'Documentos PDF',
     errBadArgs: 'Argumentos inválidos',
     errBadName: 'Nome de arquivo inválido',
     errMissing: 'Arquivo não encontrado',
     errExists: 'Já existe um arquivo com esse nome',
     errRenameFailed: 'Falha ao renomear',
+    errPdfSaveAsFailed: 'Falha ao salvar a cópia do PDF',
     errNewTabFailed: 'Falha ao criar o novo documento',
+    errDuplicateFailed: 'Não foi possível duplicar o arquivo',
     errUnsupportedExt: 'arquivos .{ext} não são suportados',
     copySuffix: 'cópia',
     menuHelp: 'Ajuda',
     thirdPartyNotices: 'Avisos de software de terceiros',
     menuExportDocx: 'Exportar como Word…',
-    pdfDocxLoginMsg: 'Exportar como Word requer login no Genspark.',
-    pdfDocxLoginDetail:
-      'Clique em “Entrar” para autorizar no navegador; depois, clique em Exportar novamente.',
-    pdfDocxBtnLogin: 'Entrar',
-    pdfDocxConfirmMsg: 'Enviar este PDF para a nuvem do Genspark e convertê-lo em Word?',
-    pdfDocxConfirmDetail:
-      'A conversão custa 5 créditos. O arquivo será enviado para processamento na nuvem.',
-    pdfDocxConfirmBalance: 'Saldo atual: {balance} créditos.',
-    pdfDocxBtnConvert: 'Continuar',
     btnCancel: 'Cancelar',
     pdfDocxFailedMsg: 'Falha ao exportar como Word',
-    pdfDocxNoCliMsg:
-      'Não é possível iniciar sessão no Genspark: falta um componente necessário (gsk). Reinstale o aplicativo.',
     pdfDocxBusyMsg: 'Já há uma exportação para Word em andamento. Aguarde a conclusão.',
-    menuExportDocxLocal: 'Exportar como Word (local)…',
-    menuExportDocxCloud: 'Exportar como Word (nuvem)…',
     menuExportPptx: 'Exportar como PowerPoint…',
     pdfPptxFailedMsg: 'Falha ao exportar como PowerPoint',
     pdfPptxBusyMsg: 'Já há uma exportação em andamento. Aguarde a conclusão.',
@@ -1592,7 +1960,7 @@ const tMain = createI18n({
       'As páginas {pages} não puderam ser convertidas em células; suas planilhas contêm uma linha de aviso.',
     pdfDocxLocalScannedMsg: 'Documento digitalizado detectado',
     pdfDocxLocalScannedDetail:
-      'A conversão local exportou as páginas como imagens para preservar a aparência. Para texto editável, use a conversão na nuvem (com OCR).',
+      'As páginas foram exportadas como imagens para preservar a aparência. Não foi possível reconhecer texto editável.',
     pdfDocxLocalDegradedMsg: 'Algumas páginas foram exportadas como imagens',
     pdfDocxLocalDegradedDetail:
       'As páginas {pages} não puderam ser reconstruídas de forma confiável e foram exportadas como imagens de página inteira.',
@@ -1602,7 +1970,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'Este PDF está criptografado e não pôde ser aberto sem a senha correta.',
     pdfDocxLocalUnsupportedEncDetail:
-      'Este PDF usa criptografia baseada em certificado ou outra criptografia sem suporte e não pode ser convertido localmente. Experimente a conversão na nuvem.',
+      'Este PDF usa criptografia baseada em certificado ou outra criptografia sem suporte e não pode ser convertido.',
     pdfPwdTitle: 'Digitar senha',
     pdfPwdPrompt: 'Este PDF está criptografado. Digite a senha para abri-lo:',
     pdfPwdRetryPrompt: 'Senha incorreta. Tente novamente.',
@@ -1619,19 +1987,31 @@ const tMain = createI18n({
       'A pasta selecionada não permite gravação e não pode ser usada como local de salvamento padrão',
   },
   it: {
+    dlgAddFolderRoot: 'Aggiungi cartella alla Home',
+    watchdogTitle: 'Il documento sta usando troppe risorse',
+    watchdogBody:
+      '"{title}" sta usando molta memoria o CPU da diversi minuti ({memory} MB, {cpu}% CPU). Puoi continuare ad attendere o chiudere il documento (ti verrà chiesto prima di salvare le modifiche non salvate). La diagnostica è stata registrata.',
+    watchdogWait: 'Continua ad attendere',
+    watchdogClose: 'Chiudi documento',
+    errFolderRootUnusable: 'Impossibile leggere la cartella selezionata',
     menuFile: 'File',
     menuSectionNew: 'Nuovo',
+    menuOpenInNewWindow: 'Apri in una nuova finestra',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Foglio di calcolo senza titolo',
     untitledDoc: 'Documento senza titolo',
     untitledDeck: 'Presentazione senza titolo',
     untitledMarkdown: 'Markdown senza titolo',
+    untitledHtml: 'HTML senza titolo',
     untitledPdf: 'PDF senza titolo',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Esporta come PDF…',
+    menuExportImages: 'Esporta come immagini…',
+    menuExportHtml: 'Esporta come HTML a file singolo…',
     menuOpenInDocs: 'Converti e apri in Docs',
     menuPrint: 'Stampa…',
     menuOpen: 'Apri…',
@@ -1648,34 +2028,24 @@ const tMain = createI18n({
     filterExcel: 'Cartelle di lavoro Excel',
     filterPpt: 'Presentazioni PowerPoint',
     filterMarkdown: 'Documenti Markdown',
+    filterHtml: 'Documenti HTML',
     filterPdf: 'Documenti PDF',
     errBadArgs: 'Argomenti non validi',
     errBadName: 'Nome file non valido',
     errMissing: 'File non trovato',
     errExists: 'Esiste già un file con questo nome',
     errRenameFailed: 'Impossibile rinominare',
+    errPdfSaveAsFailed: 'Impossibile salvare la copia del PDF',
     errNewTabFailed: 'Impossibile creare il nuovo documento',
+    errDuplicateFailed: 'Impossibile duplicare il file',
     errUnsupportedExt: 'i file .{ext} non sono supportati',
     copySuffix: 'copia',
     menuHelp: 'Aiuto',
     thirdPartyNotices: 'Note sul software di terze parti',
     menuExportDocx: 'Esporta come Word…',
-    pdfDocxLoginMsg: 'Per esportare come Word è necessario accedere a Genspark.',
-    pdfDocxLoginDetail:
-      'Fai clic su “Accedi” per autorizzare nel browser; al termine, fai di nuovo clic su Esporta.',
-    pdfDocxBtnLogin: 'Accedi',
-    pdfDocxConfirmMsg: 'Caricare questo PDF sul cloud Genspark e convertirlo in Word?',
-    pdfDocxConfirmDetail:
-      "La conversione costa 5 crediti. Il file verrà caricato per l'elaborazione nel cloud.",
-    pdfDocxConfirmBalance: 'Saldo attuale: {balance} crediti.',
-    pdfDocxBtnConvert: 'Continua',
     btnCancel: 'Annulla',
     pdfDocxFailedMsg: 'Esportazione in Word non riuscita',
-    pdfDocxNoCliMsg:
-      "Impossibile accedere a Genspark: manca un componente necessario (gsk). Reinstallare l'app.",
     pdfDocxBusyMsg: "Un'esportazione in Word è già in corso. Attendi il completamento.",
-    menuExportDocxLocal: 'Esporta come Word (locale)…',
-    menuExportDocxCloud: 'Esporta come Word (cloud)…',
     menuExportPptx: 'Esporta come PowerPoint…',
     pdfPptxFailedMsg: 'Esportazione come PowerPoint non riuscita',
     pdfPptxBusyMsg: "Un'esportazione è già in corso. Attendere che finisca.",
@@ -1691,7 +2061,7 @@ const tMain = createI18n({
       'Le pagine {pages} non hanno potuto essere convertite in celle; i loro fogli contengono una riga di avviso.',
     pdfDocxLocalScannedMsg: 'Rilevato documento scansionato',
     pdfDocxLocalScannedDetail:
-      "La conversione locale ha esportato le pagine come immagini per preservarne l'aspetto. Per testo modificabile, usa la conversione cloud (con OCR).",
+      "Le pagine sono state esportate come immagini per preservarne l'aspetto. Non è stato possibile riconoscere testo modificabile.",
     pdfDocxLocalDegradedMsg: 'Alcune pagine sono state esportate come immagini',
     pdfDocxLocalDegradedDetail:
       'Non è stato possibile ricostruire in modo affidabile le pagine {pages}; sono state esportate come immagini a pagina intera.',
@@ -1701,7 +2071,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'Questo PDF è crittografato e non è stato possibile aprirlo senza la password corretta.',
     pdfDocxLocalUnsupportedEncDetail:
-      'Questo PDF usa una crittografia basata su certificati o comunque non supportata e non può essere convertito localmente. Prova la conversione cloud.',
+      'Questo PDF usa una crittografia basata su certificati o comunque non supportata e non può essere convertito.',
     pdfPwdTitle: 'Inserisci password',
     pdfPwdPrompt: 'Questo PDF è crittografato. Inserisci la password per aprirlo:',
     pdfPwdRetryPrompt: 'Password errata. Riprova.',
@@ -1718,19 +2088,31 @@ const tMain = createI18n({
       'La cartella selezionata non è scrivibile e non può essere usata come posizione di salvataggio predefinita',
   },
   pl: {
+    dlgAddFolderRoot: 'Dodaj folder do strony głównej',
+    watchdogTitle: 'Dokument zużywa zbyt dużo zasobów',
+    watchdogBody:
+      '„{title}” od kilku minut zużywa dużo pamięci lub procesora ({memory} MB, {cpu}% CPU). Możesz dalej czekać albo zamknąć dokument (najpierw pojawi się pytanie o zapisanie niezapisanych zmian). Dane diagnostyczne zostały zapisane.',
+    watchdogWait: 'Czekaj dalej',
+    watchdogClose: 'Zamknij dokument',
+    errFolderRootUnusable: 'Nie można odczytać wybranego folderu',
     menuFile: 'Plik',
     menuSectionNew: 'Nowy',
+    menuOpenInNewWindow: 'Otwórz w nowym oknie',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Arkusz bez tytułu',
     untitledDoc: 'Dokument bez tytułu',
     untitledDeck: 'Prezentacja bez tytułu',
     untitledMarkdown: 'Markdown bez tytułu',
+    untitledHtml: 'HTML bez tytułu',
     untitledPdf: 'PDF bez tytułu',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Eksportuj jako PDF…',
+    menuExportImages: 'Eksportuj jako obrazy…',
+    menuExportHtml: 'Eksportuj jako pojedynczy plik HTML…',
     menuOpenInDocs: 'Konwertuj i otwórz w Docs',
     menuPrint: 'Drukuj…',
     menuOpen: 'Otwórz…',
@@ -1747,34 +2129,24 @@ const tMain = createI18n({
     filterExcel: 'Skoroszyty programu Excel',
     filterPpt: 'Prezentacje programu PowerPoint',
     filterMarkdown: 'Dokumenty Markdown',
+    filterHtml: 'Dokumenty HTML',
     filterPdf: 'Dokumenty PDF',
     errBadArgs: 'Nieprawidłowe argumenty',
     errBadName: 'Nieprawidłowa nazwa pliku',
     errMissing: 'Nie znaleziono pliku',
     errExists: 'Plik o tej nazwie już istnieje',
     errRenameFailed: 'Nie udało się zmienić nazwy',
+    errPdfSaveAsFailed: 'Nie udało się zapisać kopii PDF',
     errNewTabFailed: 'Nie udało się utworzyć nowego dokumentu',
+    errDuplicateFailed: 'Nie udało się zduplikować pliku',
     errUnsupportedExt: 'pliki .{ext} nie są obsługiwane',
     copySuffix: 'kopia',
     menuHelp: 'Pomoc',
     thirdPartyNotices: 'Informacje o oprogramowaniu innych firm',
     menuExportDocx: 'Eksportuj jako Word…',
-    pdfDocxLoginMsg: 'Eksport do formatu Word wymaga zalogowania do Genspark.',
-    pdfDocxLoginDetail:
-      'Kliknij „Zaloguj się”, aby autoryzować w przeglądarce; po zakończeniu kliknij Eksportuj ponownie.',
-    pdfDocxBtnLogin: 'Zaloguj się',
-    pdfDocxConfirmMsg: 'Przesłać ten PDF do chmury Genspark i przekonwertować na Word?',
-    pdfDocxConfirmDetail:
-      'Konwersja kosztuje 5 kredytów. Plik zostanie przesłany do przetworzenia w chmurze.',
-    pdfDocxConfirmBalance: 'Aktualne saldo: {balance} kredytów.',
-    pdfDocxBtnConvert: 'Kontynuuj',
     btnCancel: 'Anuluj',
     pdfDocxFailedMsg: 'Eksport do formatu Word nie powiódł się',
-    pdfDocxNoCliMsg:
-      'Nie można zalogować się do Genspark: brakuje wymaganego komponentu (gsk). Zainstaluj aplikację ponownie.',
     pdfDocxBusyMsg: 'Eksport do formatu Word już trwa. Poczekaj na jego zakończenie.',
-    menuExportDocxLocal: 'Eksportuj jako Word (lokalnie)…',
-    menuExportDocxCloud: 'Eksportuj jako Word (chmura)…',
     menuExportPptx: 'Eksportuj jako PowerPoint…',
     pdfPptxFailedMsg: 'Eksport jako PowerPoint nie powiódł się',
     pdfPptxBusyMsg: 'Eksport już trwa. Poczekaj na jego zakończenie.',
@@ -1790,7 +2162,7 @@ const tMain = createI18n({
       'Stron {pages} nie udało się przekształcić w komórki; ich arkusze zawierają wiersz z informacją.',
     pdfDocxLocalScannedMsg: 'Wykryto zeskanowany dokument',
     pdfDocxLocalScannedDetail:
-      'Konwersja lokalna wyeksportowała strony jako obrazy, aby zachować ich wygląd. Aby uzyskać edytowalny tekst, użyj konwersji w chmurze (z OCR).',
+      'Strony zostały wyeksportowane jako obrazy, aby zachować ich wygląd. Nie udało się rozpoznać edytowalnego tekstu.',
     pdfDocxLocalDegradedMsg: 'Niektóre strony wyeksportowano jako obrazy',
     pdfDocxLocalDegradedDetail:
       'Stron {pages} nie udało się wiarygodnie odtworzyć; wyeksportowano je jako obrazy całych stron.',
@@ -1800,7 +2172,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'Ten PDF jest zaszyfrowany i nie można go otworzyć bez prawidłowego hasła.',
     pdfDocxLocalUnsupportedEncDetail:
-      'Ten PDF używa szyfrowania opartego na certyfikatach lub innego nieobsługiwanego szyfrowania i nie można go przekonwertować lokalnie. Wypróbuj konwersję w chmurze.',
+      'Ten PDF używa szyfrowania opartego na certyfikatach lub innego nieobsługiwanego szyfrowania i nie można go przekonwertować.',
     pdfPwdTitle: 'Wprowadź hasło',
     pdfPwdPrompt: 'Ten PDF jest zaszyfrowany. Wprowadź hasło, aby go otworzyć:',
     pdfPwdRetryPrompt: 'Nieprawidłowe hasło. Spróbuj ponownie.',
@@ -1816,20 +2188,131 @@ const tMain = createI18n({
     errSaveDirUnusable:
       'Wybrany folder nie pozwala na zapis i nie może być domyślną lokalizacją zapisu',
   },
+  cs: {
+    dlgAddFolderRoot: 'Přidat složku na domovskou stránku',
+    watchdogTitle: 'Dokument spotřebovává příliš mnoho prostředků',
+    watchdogBody:
+      '„{title}“ už několik minut využívá hodně paměti nebo procesoru ({memory} MB, {cpu} % CPU). Můžete dál čekat, nebo dokument zavřít (u neuložených změn se nejdřív zeptáme na uložení). Diagnostika byla zaznamenána.',
+    watchdogWait: 'Dál čekat',
+    watchdogClose: 'Zavřít dokument',
+    errFolderRootUnusable: 'Vybranou složku nelze načíst',
+    menuFile: 'Soubor',
+    menuSectionNew: 'Nový',
+    menuOpenInNewWindow: 'Otevřít v novém okně',
+    menuNewDoc: 'AI Docs',
+    menuNewSheet: 'AI Sheets',
+    untitledSheet: 'Sešit bez názvu',
+    untitledDoc: 'Dokument bez názvu',
+    untitledDeck: 'Prezentace bez názvu',
+    untitledMarkdown: 'Markdown bez názvu',
+    untitledHtml: 'HTML bez názvu',
+    untitledPdf: 'PDF bez názvu',
+    menuNewSlide: 'AI Slides',
+    menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
+    menuExportPdf: 'Exportovat jako PDF…',
+    menuExportImages: 'Exportovat jako obrázky…',
+    menuExportHtml: 'Exportovat jako samostatné HTML…',
+    menuOpenInDocs: 'Převést a otevřít v Docs',
+    menuPrint: 'Tisk…',
+    menuOpen: 'Otevřít…',
+    menuSave: 'Uložit',
+    menuSaveAs: 'Uložit jako…',
+    menuClose: 'Zavřít',
+    menuEdit: 'Úpravy',
+    menuWindow: 'Okno',
+    menuHome: 'Domů',
+    backToHome: 'Zpět na domovskou stránku',
+    dlgOpenTitle: 'Otevřít soubor',
+    filterSupported: 'Podporované soubory',
+    filterWord: 'Dokumenty Word',
+    filterExcel: 'Sešity Excel',
+    filterPpt: 'Prezentace PowerPoint',
+    filterMarkdown: 'Dokumenty Markdown',
+    filterHtml: 'Dokumenty HTML',
+    filterPdf: 'Dokumenty PDF',
+    errBadArgs: 'Neplatné argumenty',
+    errBadName: 'Neplatný název souboru',
+    errMissing: 'Soubor nebyl nalezen',
+    errExists: 'Soubor s tímto názvem už existuje',
+    errRenameFailed: 'Přejmenování se nezdařilo',
+    errPdfSaveAsFailed: 'Kopii PDF se nepodařilo uložit',
+    errNewTabFailed: 'Nový dokument se nepodařilo vytvořit',
+    errDuplicateFailed: 'Soubor se nepodařilo duplikovat',
+    errUnsupportedExt: 'Soubory .{ext} nejsou podporovány',
+    copySuffix: 'kopie',
+    menuHelp: 'Nápověda',
+    thirdPartyNotices: 'Informace o softwaru třetích stran',
+    menuExportDocx: 'Exportovat jako Word…',
+    btnCancel: 'Zrušit',
+    pdfDocxFailedMsg: 'Export do Wordu se nezdařil',
+    pdfDocxBusyMsg: 'Export do Wordu už probíhá. Počkejte, až se dokončí.',
+    menuExportPptx: 'Exportovat jako PowerPoint…',
+    pdfPptxFailedMsg: 'Export do PowerPointu se nezdařil',
+    pdfPptxBusyMsg: 'Export už probíhá. Počkejte, až se dokončí.',
+    pdfPptxLocalScannedDetail:
+      'Každá stránka byla exportována jako celostránkový obrázek; text na snímcích nelze upravovat.',
+    menuExportXlsx: 'Exportovat jako Excel…',
+    pdfXlsxFailedMsg: 'Export do Excelu se nezdařil',
+    pdfXlsxBusyMsg: 'Export už probíhá. Počkejte, až se dokončí.',
+    pdfXlsxLocalScannedDetail:
+      'Naskenované stránky nelze převést na buňky; list každé stránky místo toho obsahuje řádek s upozorněním.',
+    pdfXlsxLocalSkippedMsg: 'Některé stránky nebyly převedeny na buňky',
+    pdfXlsxLocalSkippedDetail:
+      'Stránky {pages} nebylo možné převést na buňky; jejich listy místo toho obsahují řádek s upozorněním.',
+    pdfDocxLocalScannedMsg: 'Zjištěn naskenovaný dokument',
+    pdfDocxLocalScannedDetail:
+      'Stránky byly exportovány jako obrázky, aby se zachoval jejich vzhled; nepodařilo se rozpoznat žádný upravitelný text.',
+    pdfDocxLocalDegradedMsg: 'Některé stránky byly exportovány jako obrázky',
+    pdfDocxLocalDegradedDetail:
+      'Stránky {pages} nebylo možné spolehlivě rekonstruovat a byly exportovány jako celostránkové obrázky.',
+    pdfDocxLocalOcrMsg: 'Naskenované stránky převedeny na upravitelný text',
+    pdfDocxLocalOcrDetail:
+      'Stránky {pages} byly skeny; jejich text byl obnoven pomocí OCR v zařízení. Výsledek si prosím zkontrolujte.',
+    pdfDocxLocalEncryptedDetail: 'Toto PDF je šifrované a bez správného hesla ho nelze otevřít.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Toto PDF používá šifrování založené na certifikátu nebo jiné nepodporované šifrování a nelze ho převést.',
+    pdfPwdTitle: 'Zadejte heslo',
+    pdfPwdPrompt: 'Toto PDF je šifrované. Pro otevření zadejte heslo:',
+    pdfPwdRetryPrompt: 'Nesprávné heslo. Zkuste to znovu.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Ověřování hesla…',
+    pdfPwdLabel: 'Heslo',
+    pdfPwdPlaceholder: 'Zadejte heslo pro otevření',
+    pdfPwdShow: 'Zobrazit heslo',
+    pdfPwdHide: 'Skrýt heslo',
+    pdfDocxLocalCorruptDetail: 'Soubor je poškozený nebo není platným PDF a nelze ho převést.',
+    dlgPickSaveDir: 'Zvolte výchozí umístění pro ukládání',
+    errSaveDirUnusable:
+      'Do vybrané složky nelze zapisovat a nelze ji použít jako výchozí umístění pro ukládání',
+  },
   nl: {
+    dlgAddFolderRoot: 'Map toevoegen aan startpagina',
+    watchdogTitle: 'Document gebruikt te veel systeembronnen',
+    watchdogBody:
+      '"{title}" gebruikt al enkele minuten veel geheugen of CPU ({memory} MB, {cpu}% CPU). U kunt blijven wachten of het document sluiten (bij niet-opgeslagen wijzigingen wordt eerst gevraagd of u wilt opslaan). Diagnostische gegevens zijn vastgelegd.',
+    watchdogWait: 'Blijven wachten',
+    watchdogClose: 'Document sluiten',
+    errFolderRootUnusable: 'De geselecteerde map kan niet worden gelezen',
     menuFile: 'Bestand',
     menuSectionNew: 'Nieuw',
+    menuOpenInNewWindow: 'Openen in nieuw venster',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Naamloze spreadsheet',
     untitledDoc: 'Naamloos document',
     untitledDeck: 'Naamloze presentatie',
     untitledMarkdown: 'Naamloos Markdown',
+    untitledHtml: 'Naamloos HTML',
     untitledPdf: 'Naamloze PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exporteren als PDF…',
+    menuExportImages: 'Exporteren als afbeeldingen…',
+    menuExportHtml: 'Exporteren als één HTML-bestand…',
     menuOpenInDocs: 'Converteren en openen in Docs',
     menuPrint: 'Afdrukken…',
     menuOpen: 'Openen…',
@@ -1846,34 +2329,24 @@ const tMain = createI18n({
     filterExcel: 'Excel-werkmappen',
     filterPpt: 'PowerPoint-presentaties',
     filterMarkdown: 'Markdown-documenten',
+    filterHtml: 'HTML-documenten',
     filterPdf: 'PDF-documenten',
     errBadArgs: 'Ongeldige argumenten',
     errBadName: 'Ongeldige bestandsnaam',
     errMissing: 'Bestand niet gevonden',
     errExists: 'Er bestaat al een bestand met die naam',
     errRenameFailed: 'Naam wijzigen mislukt',
+    errPdfSaveAsFailed: 'PDF-kopie kon niet worden opgeslagen',
     errNewTabFailed: 'Kan het nieuwe document niet maken',
+    errDuplicateFailed: 'Kan het bestand niet dupliceren',
     errUnsupportedExt: '.{ext}-bestanden worden niet ondersteund',
     copySuffix: 'kopie',
     menuHelp: 'Help',
     thirdPartyNotices: 'Kennisgevingen over software van derden',
     menuExportDocx: 'Exporteren als Word…',
-    pdfDocxLoginMsg: 'Exporteren als Word vereist inloggen bij Genspark.',
-    pdfDocxLoginDetail:
-      'Klik op “Inloggen” om in de browser te autoriseren; klik daarna opnieuw op Exporteren.',
-    pdfDocxBtnLogin: 'Inloggen',
-    pdfDocxConfirmMsg: 'Deze PDF uploaden naar de Genspark-cloud en converteren naar Word?',
-    pdfDocxConfirmDetail:
-      'De conversie kost 5 credits. Het bestand wordt geüpload voor verwerking in de cloud.',
-    pdfDocxConfirmBalance: 'Huidig saldo: {balance} credits.',
-    pdfDocxBtnConvert: 'Doorgaan',
     btnCancel: 'Annuleren',
     pdfDocxFailedMsg: 'Exporteren als Word mislukt',
-    pdfDocxNoCliMsg:
-      'Kan niet inloggen bij Genspark: een vereist onderdeel (gsk) ontbreekt. Installeer de app opnieuw.',
     pdfDocxBusyMsg: 'Er is al een Word-export bezig. Wacht tot deze is voltooid.',
-    menuExportDocxLocal: 'Exporteren als Word (lokaal)…',
-    menuExportDocxCloud: 'Exporteren als Word (cloud)…',
     menuExportPptx: 'Exporteren als PowerPoint…',
     pdfPptxFailedMsg: 'Exporteren als PowerPoint mislukt',
     pdfPptxBusyMsg: 'Er is al een export bezig. Wacht tot deze is voltooid.',
@@ -1889,7 +2362,7 @@ const tMain = createI18n({
       "Pagina's {pages} konden niet naar cellen worden omgezet; hun werkbladen bevatten een meldingsrij.",
     pdfDocxLocalScannedMsg: 'Gescand document gedetecteerd',
     pdfDocxLocalScannedDetail:
-      "De lokale conversie heeft de pagina's als afbeeldingen geëxporteerd om hun uiterlijk te behouden. Gebruik voor bewerkbare tekst de cloudconversie (met OCR).",
+      "De pagina's zijn als afbeeldingen geëxporteerd om hun uiterlijk te behouden. Er kon geen bewerkbare tekst worden herkend.",
     pdfDocxLocalDegradedMsg: "Sommige pagina's zijn als afbeeldingen geëxporteerd",
     pdfDocxLocalDegradedDetail:
       "Pagina's {pages} konden niet betrouwbaar worden gereconstrueerd en zijn als paginagrote afbeeldingen geëxporteerd.",
@@ -1899,7 +2372,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'Deze PDF is versleuteld en kon niet worden geopend zonder het juiste wachtwoord.',
     pdfDocxLocalUnsupportedEncDetail:
-      'Deze PDF gebruikt certificaatgebaseerde of anderszins niet-ondersteunde versleuteling en kan niet lokaal worden geconverteerd. Probeer de cloudconversie.',
+      'Deze PDF gebruikt certificaatgebaseerde of anderszins niet-ondersteunde versleuteling en kan niet worden geconverteerd.',
     pdfPwdTitle: 'Wachtwoord invoeren',
     pdfPwdPrompt: 'Deze PDF is versleuteld. Voer het wachtwoord in om te openen:',
     pdfPwdRetryPrompt: 'Onjuist wachtwoord. Probeer het opnieuw.',
@@ -1916,19 +2389,31 @@ const tMain = createI18n({
       'De geselecteerde map is niet beschrijfbaar en kan niet als standaard opslaglocatie worden gebruikt',
   },
   ms: {
+    dlgAddFolderRoot: 'Tambah Folder ke Laman Utama',
+    watchdogTitle: 'Dokumen menggunakan terlalu banyak sumber',
+    watchdogBody:
+      '"{title}" telah menggunakan banyak memori atau CPU selama beberapa minit ({memory} MB, CPU {cpu}%). Anda boleh terus menunggu atau menutup dokumen ini (perubahan yang belum disimpan akan ditanya dahulu). Diagnostik telah direkodkan.',
+    watchdogWait: 'Terus Menunggu',
+    watchdogClose: 'Tutup Dokumen',
+    errFolderRootUnusable: 'Folder yang dipilih tidak dapat dibaca',
     menuFile: 'Fail',
     menuSectionNew: 'Baharu',
+    menuOpenInNewWindow: 'Buka dalam Tetingkap Baharu',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Hamparan tanpa tajuk',
     untitledDoc: 'Dokumen tanpa tajuk',
     untitledDeck: 'Persembahan tanpa tajuk',
     untitledMarkdown: 'Markdown tanpa tajuk',
+    untitledHtml: 'HTML tanpa tajuk',
     untitledPdf: 'PDF tanpa tajuk',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'Eksport sebagai PDF…',
+    menuExportImages: 'Eksport sebagai imej…',
+    menuExportHtml: 'Eksport sebagai HTML fail tunggal…',
     menuOpenInDocs: 'Tukar dan buka dalam Docs',
     menuPrint: 'Cetak…',
     menuOpen: 'Buka…',
@@ -1945,34 +2430,24 @@ const tMain = createI18n({
     filterExcel: 'Buku Kerja Excel',
     filterPpt: 'Persembahan PowerPoint',
     filterMarkdown: 'Dokumen Markdown',
+    filterHtml: 'Dokumen HTML',
     filterPdf: 'Dokumen PDF',
     errBadArgs: 'Argumen tidak sah',
     errBadName: 'Nama fail tidak sah',
     errMissing: 'Fail tidak ditemui',
     errExists: 'Fail dengan nama yang sama sudah wujud',
     errRenameFailed: 'Gagal menamakan semula',
+    errPdfSaveAsFailed: 'Gagal menyimpan salinan PDF',
     errNewTabFailed: 'Gagal mencipta dokumen baharu',
+    errDuplicateFailed: 'Tidak dapat menduplikasi fail',
     errUnsupportedExt: 'fail .{ext} tidak disokong',
     copySuffix: 'salinan',
     menuHelp: 'Bantuan',
     thirdPartyNotices: 'Notis Perisian Pihak Ketiga',
     menuExportDocx: 'Eksport sebagai Word…',
-    pdfDocxLoginMsg: 'Eksport sebagai Word memerlukan log masuk ke Genspark.',
-    pdfDocxLoginDetail:
-      'Klik “Log Masuk” untuk membuka pelayar dan memberi kebenaran; selepas selesai, klik Eksport sekali lagi.',
-    pdfDocxBtnLogin: 'Log Masuk',
-    pdfDocxConfirmMsg: 'Muat naik PDF ini ke awan Genspark untuk ditukar kepada Word?',
-    pdfDocxConfirmDetail:
-      'Penukaran ini menggunakan 5 kredit. Fail akan dimuat naik untuk diproses di awan.',
-    pdfDocxConfirmBalance: 'Baki semasa: {balance} kredit.',
-    pdfDocxBtnConvert: 'Teruskan',
     btnCancel: 'Batal',
     pdfDocxFailedMsg: 'Gagal mengeksport sebagai Word',
-    pdfDocxNoCliMsg:
-      'Tidak dapat log masuk ke Genspark: komponen yang diperlukan (gsk) tiada. Sila pasang semula aplikasi.',
     pdfDocxBusyMsg: 'Eksport ke Word sedang dijalankan. Sila tunggu sehingga selesai.',
-    menuExportDocxLocal: 'Eksport sebagai Word (setempat)…',
-    menuExportDocxCloud: 'Eksport sebagai Word (awan)…',
     menuExportPptx: 'Eksport sebagai PowerPoint…',
     pdfPptxFailedMsg: 'Eksport sebagai PowerPoint gagal',
     pdfPptxBusyMsg: 'Eksport sedang berjalan. Sila tunggu sehingga selesai.',
@@ -1988,7 +2463,7 @@ const tMain = createI18n({
       'Halaman {pages} tidak dapat ditukar kepada sel; helaiannya mengandungi baris makluman.',
     pdfDocxLocalScannedMsg: 'Dokumen imbasan dikesan',
     pdfDocxLocalScannedDetail:
-      'Penukaran setempat mengeksport halaman sebagai imej untuk mengekalkan rupanya. Untuk teks boleh edit, gunakan penukaran awan (dengan OCR).',
+      'Halaman dieksport sebagai imej untuk mengekalkan rupanya. Tiada teks boleh edit yang dapat dikenali.',
     pdfDocxLocalDegradedMsg: 'Sesetengah halaman dieksport sebagai imej',
     pdfDocxLocalDegradedDetail:
       'Halaman {pages} tidak dapat dibina semula dengan pasti dan telah dieksport sebagai imej halaman penuh.',
@@ -1998,7 +2473,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'PDF ini disulitkan dan tidak dapat dibuka tanpa kata laluan yang betul.',
     pdfDocxLocalUnsupportedEncDetail:
-      'PDF ini menggunakan penyulitan berasaskan sijil atau penyulitan yang tidak disokong dan tidak boleh ditukar secara setempat. Cuba penukaran awan.',
+      'PDF ini menggunakan penyulitan berasaskan sijil atau penyulitan yang tidak disokong dan tidak boleh ditukar.',
     pdfPwdTitle: 'Masukkan Kata Laluan',
     pdfPwdPrompt: 'PDF ini disulitkan. Masukkan kata laluan untuk membukanya:',
     pdfPwdRetryPrompt: 'Kata laluan salah. Sila cuba lagi.',
@@ -2014,19 +2489,31 @@ const tMain = createI18n({
       'Folder yang dipilih tidak boleh ditulis dan tidak dapat digunakan sebagai lokasi simpanan lalai',
   },
   he: {
+    dlgAddFolderRoot: 'הוספת תיקייה לדף הבית',
+    watchdogTitle: 'המסמך צורך יותר מדי משאבים',
+    watchdogBody:
+      '"{title}" משתמש בהרבה זיכרון או מעבד כבר כמה דקות (זיכרון {memory} MB, מעבד {cpu}%). אפשר להמשיך לחכות או לסגור את המסמך (אם יש שינויים שלא נשמרו, תתבקשו לשמור קודם). נתוני האבחון נרשמו.',
+    watchdogWait: 'להמשיך לחכות',
+    watchdogClose: 'סגירת המסמך',
+    errFolderRootUnusable: 'לא ניתן לקרוא את התיקייה שנבחרה',
     menuFile: 'קובץ',
     menuSectionNew: 'חדש',
+    menuOpenInNewWindow: 'פתח בחלון חדש',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'גיליון אלקטרוני ללא שם',
     untitledDoc: 'מסמך ללא שם',
     untitledDeck: 'מצגת ללא שם',
     untitledMarkdown: 'Markdown ללא שם',
+    untitledHtml: 'HTML ללא שם',
     untitledPdf: 'PDF ללא שם',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'ייצוא כ-PDF…',
+    menuExportImages: 'ייצוא כתמונות…',
+    menuExportHtml: 'ייצוא כ-HTML בקובץ יחיד…',
     menuOpenInDocs: 'המרה ופתיחה ב-Docs',
     menuPrint: 'הדפסה…',
     menuOpen: 'פתיחה…',
@@ -2043,31 +2530,24 @@ const tMain = createI18n({
     filterExcel: 'חוברות עבודה של Excel',
     filterPpt: 'מצגות PowerPoint',
     filterMarkdown: 'מסמכי Markdown',
+    filterHtml: 'מסמכי HTML',
     filterPdf: 'מסמכי PDF',
     errBadArgs: 'ארגומנטים לא חוקיים',
     errBadName: 'שם קובץ לא חוקי',
     errMissing: 'הקובץ לא נמצא',
     errExists: 'כבר קיים קובץ באותו שם',
     errRenameFailed: 'שינוי השם נכשל',
+    errPdfSaveAsFailed: 'לא ניתן לשמור את עותק ה-PDF',
     errNewTabFailed: 'יצירת המסמך החדש נכשלה',
+    errDuplicateFailed: 'לא ניתן לשכפל את הקובץ',
     errUnsupportedExt: 'קובצי .{ext} אינם נתמכים',
     copySuffix: 'עותק',
     menuHelp: 'עזרה',
     thirdPartyNotices: 'הודעות על תוכנות צד שלישי',
     menuExportDocx: 'ייצוא כ-Word…',
-    pdfDocxLoginMsg: 'ייצוא כ-Word דורש התחברות ל-Genspark.',
-    pdfDocxLoginDetail: 'לחיצה על ”התחברות” תפתח את הדפדפן לאישור; בסיום, לחצו שוב על ייצוא.',
-    pdfDocxBtnLogin: 'התחברות',
-    pdfDocxConfirmMsg: 'להעלות את ה-PDF לענן של Genspark ולהמיר אותו ל-Word?',
-    pdfDocxConfirmDetail: 'ההמרה עולה 5 קרדיטים. הקובץ יועלה לעיבוד בענן.',
-    pdfDocxConfirmBalance: 'יתרה נוכחית: {balance} קרדיטים.',
-    pdfDocxBtnConvert: 'המשך',
     btnCancel: 'ביטול',
     pdfDocxFailedMsg: 'הייצוא כ-Word נכשל',
-    pdfDocxNoCliMsg: 'לא ניתן להתחבר ל-Genspark: רכיב נדרש (gsk) חסר. נא להתקין מחדש את האפליקציה.',
     pdfDocxBusyMsg: 'ייצוא ל-Word כבר מתבצע. נא להמתין לסיומו.',
-    menuExportDocxLocal: 'ייצוא כ-Word (המרה מקומית)…',
-    menuExportDocxCloud: 'ייצוא כ-Word (המרה בענן)…',
     menuExportPptx: 'ייצוא כ-PowerPoint…',
     pdfPptxFailedMsg: 'הייצוא כ-PowerPoint נכשל',
     pdfPptxBusyMsg: 'ייצוא כבר מתבצע. יש להמתין לסיומו.',
@@ -2082,7 +2562,7 @@ const tMain = createI18n({
       'לא ניתן היה להמיר את העמודים {pages} לתאים; בגיליונות שלהם נוספה שורת הודעה.',
     pdfDocxLocalScannedMsg: 'זוהה מסמך סרוק',
     pdfDocxLocalScannedDetail:
-      'ההמרה המקומית ייצאה את העמודים כתמונות כדי לשמר את המראה. לטקסט הניתן לעריכה, השתמשו בהמרה בענן (עם OCR).',
+      'העמודים יוצאו כתמונות כדי לשמר את המראה. לא ניתן היה לזהות טקסט הניתן לעריכה.',
     pdfDocxLocalDegradedMsg: 'חלק מהעמודים יוצאו כתמונות',
     pdfDocxLocalDegradedDetail:
       'לא ניתן היה לשחזר באופן אמין את עמודים {pages}, והם יוצאו כתמונות של עמוד מלא.',
@@ -2091,7 +2571,7 @@ const tMain = createI18n({
       'עמודים {pages} היו סריקות; הטקסט שוחזר באמצעות OCR מקומי. מומלץ להגיה את התוצאה.',
     pdfDocxLocalEncryptedDetail: 'קובץ PDF זה מוצפן ולא ניתן היה לפתוח אותו ללא הסיסמה הנכונה.',
     pdfDocxLocalUnsupportedEncDetail:
-      'קובץ PDF זה משתמש בהצפנה מבוססת אישורים או בהצפנה שאינה נתמכת ולא ניתן להמירו מקומית. נסו את ההמרה בענן.',
+      'קובץ PDF זה משתמש בהצפנה מבוססת אישורים או בהצפנה שאינה נתמכת ולא ניתן להמירו.',
     pdfPwdTitle: 'הזנת סיסמה',
     pdfPwdPrompt: 'קובץ PDF זה מוצפן. הזינו את הסיסמה כדי לפתוח אותו:',
     pdfPwdRetryPrompt: 'סיסמה שגויה. נסו שוב.',
@@ -2107,19 +2587,31 @@ const tMain = createI18n({
       'התיקייה שנבחרה אינה ניתנת לכתיבה ולא ניתן להשתמש בה כמיקום שמירה כברירת מחדל',
   },
   hi: {
+    dlgAddFolderRoot: 'होम में फ़ोल्डर जोड़ें',
+    watchdogTitle: 'दस्तावेज़ बहुत अधिक संसाधन ले रहा है',
+    watchdogBody:
+      '"{title}" कई मिनटों से बहुत अधिक मेमोरी या CPU इस्तेमाल कर रहा है (मेमोरी {memory} MB, CPU {cpu}%)। आप इंतज़ार जारी रख सकते हैं या यह दस्तावेज़ बंद कर सकते हैं (बिना सहेजे बदलाव होने पर पहले सहेजने के लिए पूछा जाएगा)। निदान जानकारी दर्ज कर ली गई है।',
+    watchdogWait: 'इंतज़ार जारी रखें',
+    watchdogClose: 'दस्तावेज़ बंद करें',
+    errFolderRootUnusable: 'चयनित फ़ोल्डर पढ़ा नहीं जा सका',
     menuFile: 'फ़ाइल',
     menuSectionNew: 'नया',
+    menuOpenInNewWindow: 'नई विंडो में खोलें',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'शीर्षकहीन स्प्रेडशीट',
     untitledDoc: 'बिना शीर्षक दस्तावेज़',
     untitledDeck: 'बिना शीर्षक प्रस्तुति',
     untitledMarkdown: 'अनाम Markdown',
+    untitledHtml: 'अनाम HTML',
     untitledPdf: 'अनाम PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: 'PDF के रूप में निर्यात…',
+    menuExportImages: 'छवियों के रूप में निर्यात…',
+    menuExportHtml: 'एकल-फ़ाइल HTML के रूप में निर्यात…',
     menuOpenInDocs: 'Docs में बदलें और खोलें',
     menuPrint: 'प्रिंट करें…',
     menuOpen: 'खोलें…',
@@ -2136,34 +2628,24 @@ const tMain = createI18n({
     filterExcel: 'Excel वर्कबुक',
     filterPpt: 'PowerPoint प्रस्तुतियाँ',
     filterMarkdown: 'Markdown दस्तावेज़',
+    filterHtml: 'HTML दस्तावेज़',
     filterPdf: 'PDF दस्तावेज़',
     errBadArgs: 'अमान्य आर्ग्युमेंट',
     errBadName: 'अमान्य फ़ाइल नाम',
     errMissing: 'फ़ाइल नहीं मिली',
     errExists: 'इस नाम की फ़ाइल पहले से मौजूद है',
     errRenameFailed: 'नाम बदलने में विफल',
+    errPdfSaveAsFailed: 'PDF की प्रति सहेजी नहीं जा सकी',
     errNewTabFailed: 'नया दस्तावेज़ बनाने में विफल',
+    errDuplicateFailed: 'फ़ाइल की प्रतिलिपि नहीं बनाई जा सकी',
     errUnsupportedExt: '.{ext} फ़ाइलें समर्थित नहीं हैं',
     copySuffix: 'प्रतिलिपि',
     menuHelp: 'सहायता',
     thirdPartyNotices: 'तृतीय-पक्ष सॉफ़्टवेयर सूचनाएँ',
     menuExportDocx: 'Word के रूप में निर्यात करें…',
-    pdfDocxLoginMsg: 'Word के रूप में निर्यात करने के लिए Genspark में लॉगिन आवश्यक है।',
-    pdfDocxLoginDetail:
-      '“लॉगिन” पर क्लिक करने से ब्राउज़र में प्राधिकरण खुलेगा; पूरा होने पर फिर से निर्यात पर क्लिक करें।',
-    pdfDocxBtnLogin: 'लॉगिन',
-    pdfDocxConfirmMsg: 'इस PDF को Genspark क्लाउड पर अपलोड करके Word में बदलें?',
-    pdfDocxConfirmDetail:
-      'रूपांतरण में 5 क्रेडिट लगते हैं। फ़ाइल क्लाउड में प्रोसेसिंग के लिए अपलोड की जाएगी।',
-    pdfDocxConfirmBalance: 'वर्तमान शेष: {balance} क्रेडिट।',
-    pdfDocxBtnConvert: 'जारी रखें',
     btnCancel: 'रद्द करें',
     pdfDocxFailedMsg: 'Word के रूप में निर्यात विफल रहा',
-    pdfDocxNoCliMsg:
-      'Genspark में साइन इन नहीं किया जा सकता: आवश्यक घटक (gsk) मौजूद नहीं है। कृपया ऐप को फिर से इंस्टॉल करें।',
     pdfDocxBusyMsg: 'Word के रूप में निर्यात पहले से चल रहा है। कृपया पूरा होने तक प्रतीक्षा करें।',
-    menuExportDocxLocal: 'Word के रूप में निर्यात करें (लोकल)…',
-    menuExportDocxCloud: 'Word के रूप में निर्यात करें (क्लाउड)…',
     menuExportPptx: 'PowerPoint के रूप में निर्यात करें…',
     pdfPptxFailedMsg: 'PowerPoint के रूप में निर्यात विफल रहा',
     pdfPptxBusyMsg: 'एक निर्यात पहले से चल रहा है। कृपया उसके पूरा होने की प्रतीक्षा करें।',
@@ -2179,7 +2661,7 @@ const tMain = createI18n({
       'पेज {pages} सेल में परिवर्तित नहीं किए जा सके; उनकी वर्कशीट में एक सूचना पंक्ति जोड़ी गई है।',
     pdfDocxLocalScannedMsg: 'स्कैन किया गया दस्तावेज़ मिला',
     pdfDocxLocalScannedDetail:
-      'लोकल रूपांतरण ने पृष्ठों का स्वरूप बनाए रखने के लिए उन्हें छवियों के रूप में निर्यात किया। संपादन योग्य टेक्स्ट के लिए क्लाउड रूपांतरण (OCR सहित) का उपयोग करें।',
+      'पृष्ठों का स्वरूप बनाए रखने के लिए उन्हें छवियों के रूप में निर्यात किया गया। संपादन योग्य टेक्स्ट को पहचाना नहीं जा सका।',
     pdfDocxLocalDegradedMsg: 'कुछ पृष्ठ छवियों के रूप में निर्यात किए गए',
     pdfDocxLocalDegradedDetail:
       'पृष्ठ {pages} का लेआउट विश्वसनीय रूप से पुनर्निर्मित नहीं हो सका, इसलिए उन्हें पूर्ण-पृष्ठ छवियों के रूप में निर्यात किया गया।',
@@ -2189,7 +2671,7 @@ const tMain = createI18n({
     pdfDocxLocalEncryptedDetail:
       'यह PDF एन्क्रिप्टेड है और सही पासवर्ड के बिना इसे खोला नहीं जा सका।',
     pdfDocxLocalUnsupportedEncDetail:
-      'यह PDF प्रमाणपत्र-आधारित या असमर्थित एन्क्रिप्शन का उपयोग करता है और इसे स्थानीय रूप से परिवर्तित नहीं किया जा सकता। क्लाउड रूपांतरण आज़माएँ।',
+      'यह PDF प्रमाणपत्र-आधारित या असमर्थित एन्क्रिप्शन का उपयोग करता है और इसे परिवर्तित नहीं किया जा सकता।',
     pdfPwdTitle: 'पासवर्ड दर्ज करें',
     pdfPwdPrompt: 'यह PDF एन्क्रिप्टेड है। खोलने के लिए पासवर्ड दर्ज करें:',
     pdfPwdRetryPrompt: 'पासवर्ड गलत है। कृपया फिर से प्रयास करें।',
@@ -2206,19 +2688,31 @@ const tMain = createI18n({
       'चयनित फ़ोल्डर में लिखा नहीं जा सकता, इसलिए इसे डिफ़ॉल्ट सहेजने के स्थान के रूप में उपयोग नहीं किया जा सकता',
   },
   'zh-TW': {
+    dlgAddFolderRoot: '將資料夾加入首頁',
+    watchdogTitle: '文件佔用資源過高',
+    watchdogBody:
+      '「{title}」已持續數分鐘佔用大量記憶體或 CPU（記憶體 {memory} MB，CPU {cpu}%）。可以繼續等待，或關閉這個文件（有未儲存的變更會先詢問是否儲存）。診斷資訊已記錄。', // public-hygiene: allow
+    watchdogWait: '繼續等待',
+    watchdogClose: '關閉文件',
+    errFolderRootUnusable: '無法讀取所選資料夾',
     menuFile: '檔案',
     menuSectionNew: '新增',
+    menuOpenInNewWindow: '在新視窗中開啟',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '未命名試算表',
     untitledDoc: '未命名文件',
     untitledDeck: '未命名簡報',
     untitledMarkdown: '未命名 Markdown',
+    untitledHtml: '未命名 HTML',
     untitledPdf: '未命名 PDF',
     menuNewSlide: 'AI Slides',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
     menuNewPdf: 'AI PDF',
     menuExportPdf: '匯出為 PDF…',
+    menuExportImages: '匯出為圖片…',
+    menuExportHtml: '匯出為單檔 HTML…',
     menuOpenInDocs: '轉換為 Docs 文件並開啟',
     menuPrint: '列印…',
     menuOpen: '開啟…',
@@ -2235,31 +2729,24 @@ const tMain = createI18n({
     filterExcel: 'Excel 活頁簿',
     filterPpt: 'PowerPoint 簡報',
     filterMarkdown: 'Markdown 文件',
+    filterHtml: 'HTML 文件',
     filterPdf: 'PDF 文件',
     errBadArgs: '參數無效',
     errBadName: '檔案名稱不合法',
     errMissing: '檔案不存在',
     errExists: '同名檔案已存在',
     errRenameFailed: '重新命名失敗',
+    errPdfSaveAsFailed: '另存為 PDF 失敗',
     errNewTabFailed: '新建文件失敗',
+    errDuplicateFailed: '複製檔案失敗',
     errUnsupportedExt: '暫不支援 .{ext} 類型',
     copySuffix: '副本',
     menuHelp: '說明',
     thirdPartyNotices: '第三方軟體聲明',
     menuExportDocx: '匯出為 Word…',
-    pdfDocxLoginMsg: '匯出為 Word 需要登入 Genspark 帳號。',
-    pdfDocxLoginDetail: '點擊「登入」將開啟瀏覽器完成授權，完成後請重新點擊匯出。',
-    pdfDocxBtnLogin: '登入',
-    pdfDocxConfirmMsg: '將此 PDF 上傳到 Genspark 雲端轉換為 Word？',
-    pdfDocxConfirmDetail: '本次轉換將消耗 5 credits，檔案將上傳至雲端處理。',
-    pdfDocxConfirmBalance: '目前餘額 {balance} credits。',
-    pdfDocxBtnConvert: '繼續',
     btnCancel: '取消',
     pdfDocxFailedMsg: '匯出為 Word 失敗',
-    pdfDocxNoCliMsg: '無法登入 Genspark：缺少必要元件（gsk），請重新安裝應用程式。',
     pdfDocxBusyMsg: '正在轉換中，請等待目前的匯出完成。',
-    menuExportDocxLocal: '匯出為 Word（本機轉換）…',
-    menuExportDocxCloud: '匯出為 Word（雲端轉換）…',
     menuExportPptx: '匯出為 PPT…',
     pdfPptxFailedMsg: '匯出為 PPT 失敗',
     pdfPptxBusyMsg: '正在轉換中，請等待目前匯出完成。',
@@ -2271,16 +2758,14 @@ const tMain = createI18n({
     pdfXlsxLocalSkippedMsg: '部分頁面未轉換為儲存格',
     pdfXlsxLocalSkippedDetail: '第 {pages} 頁無法轉換為儲存格，對應工作表中已寫入提示列。',
     pdfDocxLocalScannedMsg: '偵測到掃描文件',
-    pdfDocxLocalScannedDetail:
-      '本機轉換已將各頁以圖片方式保真匯出。如需可編輯的文字，請使用雲端轉換（支援 OCR）。',
+    pdfDocxLocalScannedDetail: '本機轉換已將各頁以圖片方式保真匯出，未能辨識出可編輯的文字。',
     pdfDocxLocalDegradedMsg: '部分頁面已以圖片匯出',
     pdfDocxLocalDegradedDetail: '第 {pages} 頁的版面無法可靠重建，已以整頁圖片保真匯出。',
     pdfDocxLocalOcrMsg: '掃描頁已轉換為可編輯文字',
     pdfDocxLocalOcrDetail:
       '第 {pages} 頁為掃描件，已透過本機 OCR 辨識為可編輯文字，建議校對辨識結果。',
     pdfDocxLocalEncryptedDetail: '此 PDF 已加密，未提供正確的密碼，無法轉換。',
-    pdfDocxLocalUnsupportedEncDetail:
-      '該檔案使用憑證加密或不支援的加密方式，無法在本機轉換，可嘗試雲端轉換。',
+    pdfDocxLocalUnsupportedEncDetail: '該檔案使用憑證加密或不支援的加密方式，無法轉換。',
     pdfPwdTitle: '輸入密碼',
     pdfPwdPrompt: '此 PDF 已加密，請輸入開啟密碼：',
     pdfPwdRetryPrompt: '密碼不正確，請重試。',
@@ -2305,36 +2790,191 @@ let shellWindow: BrowserWindow | null = null
 let tabManager: TabManager | null = null
 
 /**
- * When the user creates a file from a specific project view, remember which
- * project the next save should belong to. key: 'doc' | 'sheet' | 'slide', value: projectId.
- * Consumed by each app's saveHook once the file first hits disk (P1 item 3).
+ * New file from a folder view: the click remembers the folder per kind, the
+ * new-tab code consumes it right away. Sheets / PDF write their blank file
+ * straight into that folder; the editors that save untitled files themselves
+ * (docs, slides, markdown, html) get the folder bound to the tab that was just
+ * created, and the tab's first save moves the fresh file there.
+ * key: 'doc' | 'sheet' | 'slide' | 'markdown' | 'html' | 'pdf'
  */
-const pendingNewFileProject = new Map<string, string>()
+/** folders the user added to the home tree beside the default save folder */
+function extraFolderRoots(): string[] {
+  return readExtraRoots(readAppSettings(APP_SETTINGS_PATH()), defaultSaveDir())
+}
+
+function folderRootPaths(): string[] {
+  return [defaultSaveDir(), ...extraFolderRoots()]
+}
+
+function insideAnyRoot(path: string): boolean {
+  return folderRootPaths().some((root) => isInsideRoot(root, path))
+}
+
+function isAnyRoot(path: string): boolean {
+  const key = resolve(path)
+  return folderRootPaths().some((root) => resolve(root) === key)
+}
+
+const pendingNewFileDir = new Map<string, { dir: string; setAt: number }>()
+/** folder bound to a freshly created editor tab, keyed by its webContents id; consumed by the first save */
+const pendingDirByWc = new Map<number, { dir: string; setAt: number }>()
+/** a pending folder only applies to a file created within this window after the click */
+const PENDING_DIR_TTL_MS = 30 * 60 * 1000
+
+function rememberPendingDir(kind: string, opts?: NewFileOpts): void {
+  const dir = opts?.dir
+  if (!dir || resolve(dir) === resolve(defaultSaveDir()) || !insideAnyRoot(dir)) {
+    pendingNewFileDir.delete(kind)
+    return
+  }
+  pendingNewFileDir.set(kind, { dir, setAt: Date.now() })
+}
+
+/** the folder remembered for this kind, consumed; null when none, expired or gone */
+function takePendingDir(kind: string): { dir: string; setAt: number } | null {
+  const pending = pendingNewFileDir.get(kind)
+  pendingNewFileDir.delete(kind)
+  if (!pending) return null
+  if (Date.now() - pending.setAt > PENDING_DIR_TTL_MS) return null
+  return existsSync(pending.dir) ? pending : null
+}
+
+/** where a shell-created blank file (sheet, pdf) lands: the remembered folder, else the root */
+function newFileDir(kind: string): string {
+  return takePendingDir(kind)?.dir ?? defaultSaveDir()
+}
+
+/** hand the remembered folder to the tab that was just opened for it */
+function bindPendingDir(kind: string, tabId: string | undefined): void {
+  const pending = takePendingDir(kind)
+  const wc = tabId ? tabManager?.webContentsForTab(tabId) : undefined
+  if (pending && wc) pendingDirByWc.set(wc.id, pending)
+}
 
 /**
- * P1: after a file first hits disk, if a pending project was set earlier via
- * "create from project view", move the new file into that project automatically.
- * Called from createShellWindow's opened/saved hooks.
+ * A tab's file first hit disk (silent first save, Save As, or an open): if a
+ * folder is bound to that tab and the file is a fresh one in the root, move
+ * it there. A pre-existing file opened in the tab never qualifies: its birth
+ * time (or, where the filesystem reports none, its mtime) predates the click.
  */
-function applyPendingProject(filePath: string): void {
-  const ext = extname(filePath).slice(1).toLowerCase()
-  let key: string | undefined
-  if (ext === 'docx') key = 'doc'
-  else if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'csv') key = 'sheet'
-  else if (ext === 'pptx') key = 'slide'
-  else if (ext === 'md' || ext === 'markdown') key = 'markdown'
-  else if (ext === 'pdf') key = 'pdf'
-  if (!key) return
-  const projectId = pendingNewFileProject.get(key)
-  if (!projectId) return
-  pendingNewFileProject.delete(key)
+function applyPendingDir(wcId: number, filePath: string): string {
+  const pending = pendingDirByWc.get(wcId)
+  if (!pending) return filePath
+  if (Date.now() - pending.setAt > PENDING_DIR_TTL_MS) {
+    pendingDirByWc.delete(wcId)
+    return filePath
+  }
+  if (resolve(dirname(filePath)) !== resolve(defaultSaveDir())) return filePath
   try {
-    const store = new ProjectStore(app.getPath('userData'))
-    store.ensureDefaultProject()
-    store.resolveProjectForFile(filePath) // assign to default first (idempotent)
-    store.moveFileToProject(filePath, projectId)
+    const stat = statSync(filePath)
+    const born = stat.birthtimeMs || stat.mtimeMs
+    if (born < pending.setAt - 2000) return filePath
+  } catch {
+    return filePath
+  }
+  pendingDirByWc.delete(wcId)
+  if (!existsSync(pending.dir)) return filePath
+  // a clash with an existing name takes the "(2)" suffix rather than staying in the root
+  const target = join(pending.dir, uniqueNameIn(pending.dir, basename(filePath)))
+  try {
+    renameSync(filePath, target)
   } catch (err) {
-    console.warn('[shell] applyPendingProject failed:', err)
+    console.warn('[shell] move new file into folder failed:', err)
+    return filePath
+  }
+  afterFileMoved(filePath, target)
+  return target
+}
+
+/**
+ * Everything that keys on a file path follows a rename/move: recents, stars,
+ * the AI chat history (project-store), the slides start-screen list and any
+ * open tab (which re-grants the new path and refreshes its title).
+ */
+function afterFileMoved(oldPath: string, newPath: string): void {
+  replaceRecentFile(oldPath, newPath)
+  projectFileRenamed(oldPath, newPath)
+  if (/\.pptx$/i.test(newPath)) void replaceSlidesRecentFile(oldPath, newPath)
+  const affected = tabManager?.renameTabFile(oldPath, newPath) ?? []
+  const detachedAffected = detachedRenameFile(oldPath, newPath)
+  if (detachedAffected) affected.push(detachedAffected)
+  for (const t of affected) {
+    if (t.kind === 'slides') slidesFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'docs') docsFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'sheets') sheetsFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'markdown') markdownFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'html') htmlFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'pdf') pdfFileRenamed(t.webContents, oldPath, newPath)
+  }
+}
+
+function trackedFilesUnder(dir: string): string[] {
+  return pathsUnder(dir, [
+    ...readRecentFiles(),
+    ...readStarredFiles(),
+    ...projectFilePaths(),
+    ...readSlidesRecentFiles(),
+    ...(tabManager?.openFilePaths() ?? []),
+    ...detachedFilePaths(),
+  ])
+}
+
+/** a folder moved/renamed: re-key every tracked file that lived under it */
+function afterFolderMoved(oldDir: string, newDir: string, filesBefore: readonly string[]): void {
+  for (const file of filesBefore) afterFileMoved(file, rebasePath(file, oldDir, newDir))
+}
+
+const folderWatchers = new Map<string, FolderWatcher>()
+
+let fileIndexStore: FileIndexStore | null = null
+let fileIndexer: FileIndexer | null = null
+let searchReranker: SearchReranker | null = null
+
+function readFileSearchSettings(): FileSearchSettings {
+  return normalizeFileSearchSettings(readAppSettings(APP_SETTINGS_PATH()).fileSearch)
+}
+
+/** the search index lives in userData and follows the save folder plus recents/starred */
+function ensureFileIndexer(): FileIndexer | null {
+  if (fileIndexer) return fileIndexer
+  try {
+    fileIndexStore = new FileIndexStore(join(app.getPath('userData'), 'file-index.db'))
+  } catch (e) {
+    console.warn('[file-index] unavailable:', e instanceof Error ? e.message : e)
+    return null
+  }
+  fileIndexer = new FileIndexer(fileIndexStore, extractWorkerPath, {
+    roots: () => folderRootPaths().filter((root) => existsSync(root)),
+    extraPaths: () => [...readRecentFiles(), ...readStarredFiles()],
+  })
+  return fileIndexer
+}
+
+const SEARCH_EXT_FAMILY: Record<string, readonly string[]> = {
+  docx: ['docx', 'doc'],
+  xlsx: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv'],
+  pptx: ['pptx', 'ppt'],
+  md: ['md', 'markdown'],
+  html: ['html', 'htm'],
+}
+
+/** one recursive watcher per tree root; follows the save-folder setting and the added folders */
+function ensureFolderWatchers(): void {
+  const wanted = new Set(folderRootPaths().filter((root) => existsSync(root)))
+  for (const [root, watcher] of folderWatchers) {
+    if (wanted.has(root) && watcher.active) continue
+    watcher.close()
+    folderWatchers.delete(root)
+  }
+  for (const root of wanted) {
+    if (folderWatchers.has(root)) continue
+    const watcher = new FolderWatcher(root, (dirs) => {
+      fileIndexer?.refresh()
+      for (const wc of webContents.getAllWebContents()) {
+        if (!wc.isDestroyed()) wc.send(HOME_CHANNELS.folderChanged, dirs)
+      }
+    })
+    folderWatchers.set(root, watcher)
   }
 }
 
@@ -2355,23 +2995,38 @@ function applyMenuFor(kind: TabKind): void {
     case 'markdown':
       buildMarkdownMenu()
       break
+    case 'html':
+      buildHtmlMenu()
+      break
     default:
       buildHomeMenu()
   }
+}
+
+function refreshTitleBarOverlay(): void {
+  if (process.platform === 'darwin' || !shellWindow || shellWindow.isDestroyed()) return
+  shellWindow.setTitleBarOverlay(tabStripOverlay(nativeTheme.shouldUseDarkColors))
 }
 
 function createShellWindow(): void {
   const win = new BrowserWindow({
     width: 1360,
     height: 900,
-    minWidth: 980,
-    minHeight: 600,
+    minWidth: 720,
+    minHeight: 550,
     title: 'GenOffice',
     // vibrancy: editor modules punch translucent regions (e.g. the slides
     // thumbnail pane) through to the desktop
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const, vibrancy: 'sidebar' as const }
-      : {}),
+      : {
+          // the tab strip is the title bar, as on macOS; the application menu
+          // stays registered for its accelerators and opens from the strip's
+          // menu button (Alt still reveals the native bar where one exists)
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: tabStripOverlay(nativeTheme.shouldUseDarkColors),
+          autoHideMenuBar: true,
+        }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -2380,16 +3035,26 @@ function createShellWindow(): void {
     },
   })
   shellWindow = win
+  nativeTheme.on('updated', refreshTitleBarOverlay)
+  win.once('closed', () => nativeTheme.off('updated', refreshTitleBarOverlay))
   // dragging the window by the tab strip's blank (draggable) area produces no
   // DOM event anywhere — will-move is the only signal to dismiss popovers
   win.on('will-move', () => broadcastChromePressed())
   // A detached editor window claims the process-global menu/active-editor targets
-  // while focused; take them back when the shell window regains focus
-  win.on('focus', () => tabManager?.refreshActiveTargets())
+  // while focused; take them back when the shell window regains focus. Keyboard
+  // focus must land back on the active tab's view too — regaining window focus
+  // gives it to the chrome webContents, leaving typing dead in the document.
+  win.on('focus', () => {
+    tabManager?.refreshActiveTargets()
+    tabManager?.focusActiveView()
+  })
 
   const manager = new TabManager(
     win,
-    () => win.webContents.send(TABS_CHANNELS.changed, manager.list()),
+    () => {
+      win.webContents.send(TABS_CHANNELS.changed, manager.list())
+      publishOpenDocumentsIfOwner([...manager.openFilePaths(), ...detachedFilePaths()])
+    },
     applyMenuFor,
     // no extension: these tabs have no file on disk yet; the title becomes the
     // real filename (the localized untitled default + .docx etc.) once the first save lands
@@ -2400,31 +3065,83 @@ function createShellWindow(): void {
           ? tm('untitledDeck')
           : kind === 'markdown'
             ? tm('untitledMarkdown')
-            : tm('untitledSheet'),
+            : kind === 'html'
+              ? tm('untitledHtml')
+              : tm('untitledSheet'),
   )
   tabManager = manager
 
-  // pushRecent-triggered docs menu rebuilds must not clobber the active tab's menu
-  setDocsMenuGate(() => manager.list().some((t) => t.active && t.kind === 'docs'))
+  // Docking: a detached window dragged over this window's tab strip hands its
+  // document back. The strip reports the insertion slot for each preview
+  // (lastDockIndex); the slot is consumed by the dock that follows.
+  setDockHost({
+    band: () => dockBandFor(win),
+    preview: (x) => {
+      if (!win.isDestroyed())
+        win.webContents.send(TABS_CHANNELS.dockPreview, x === null ? null : { x })
+    },
+    dock: (tab) => {
+      const index = lastDockIndex
+      lastDockIndex = undefined
+      if (!win.isDestroyed()) win.webContents.send(TABS_CHANNELS.dockPreview, null)
+      manager.attachTab(tab, index)
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    },
+  })
+
+  // pushRecent-triggered docs menu rebuilds must not clobber the active tab's
+  // menu; a focused detached docs window owns the menu just like an active tab
+  setDocsMenuGate(
+    () =>
+      focusedDetachedKind() === 'docs' || manager.list().some((t) => t.active && t.kind === 'docs'),
+  )
 
   setDocsShellWindow(win)
   setSheetsShellWindow(win)
+  setDocsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
+  setSheetsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSlidesShellWindow(win)
+  setSlidesHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSlidesShowBleed((wc, on) => manager.setContentBleed(wc, on))
+  setHtmlPresentHooks({
+    setBleed: (wc, on) => manager.setContentBleed(wc, on),
+    hostWindow: (wc) => detachedWindowForWebContents(wc.id) ?? win,
+    openTab: (owner, title) => {
+      manager.openHtmlPresentTab(owner, title)
+      return true
+    },
+    closeTab: (wc) => {
+      const id = manager.tabIdForWebContents(wc.id)
+      if (id) void manager.closeTab(id)
+      return !!id
+    },
+  })
+  // A detached docs/sheets window can outlive the shell window; its hooks must
+  // then reach the live tab manager (recreating the shell), never this closure's.
   setDocsShellHooks({
-    openTab: (openPath, options) => manager.openDocsTab(openPath, options),
+    openTab: (openPath, options) => ensureTabManager().openDocsTab(openPath, options),
     openAiDocTab: (content) =>
-      manager.openDocsTab(undefined, { newBlank: true, aiContent: content }),
+      ensureTabManager().openDocsTab(undefined, { newBlank: true, aiContent: content }),
     listTabs: () =>
-      manager
-        .list()
+      (tabManager?.list() ?? [])
         .filter((t) => t.kind === 'docs')
         .map((t) => ({ id: t.id, title: t.title, focused: t.active })),
-    focusTab: (id) => manager.activateTab(id),
-    closeActiveTab: () => manager.closeActiveTab(),
+    focusTab: (id) => tabManager?.activateTab(id),
+    // ⌘W in a detached docs window closes that window (its own close guard runs)
+    closeActiveTab: () => {
+      const focused = BrowserWindow.getFocusedWindow()
+      if (focused && focused !== win) focused.close()
+      else tabManager?.closeActiveTab()
+    },
     openGeneratedPath: (path) => openGeneratedDocument(path),
   })
-  setSheetsCloseTabHook(() => manager.closeActiveTab())
+  setSheetsCloseTabHook(() => {
+    const focused = BrowserWindow.getFocusedWindow()
+    if (focused && focused !== win) focused.close()
+    else tabManager?.closeActiveTab()
+  })
   // ⌘W targets the focused window: in a detached slides editor window it closes
   // that window (running its own close guard), not the shell's active tab
   setSlidesCloseTabHook(() => {
@@ -2433,45 +3150,81 @@ function createShellWindow(): void {
     else manager.closeActiveTab()
   })
   // When ⌘O opens a file inside a tab, sync the tab title/path (used for de-dup by path) and record it as recent.
-  // The first save / save-as fires this too, so applyPendingProject also runs here.
+  // The first save / save-as fires this too, so applyPendingDir also runs here.
   setSheetsWorkbookOpenedHook((wc, path) => {
     manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
     recordRecentFile(path)
-    applyPendingProject(path)
   })
   setSlidesOpenedHook((wc, path) => {
     manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
     recordRecentFile(path)
-    applyPendingProject(path)
+    applyPendingDir(wc.id, path)
   })
   // docs' save-as / silent first save lands on a new path → sync the tab title too
   setDocsFileSavedHook((wc, path) => {
     manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
     recordRecentFile(path)
-    applyPendingProject(path)
+    return applyPendingDir(wc.id, path)
   })
   // ⌘O / open-path inside a docs tab: sync the tab title immediately, same
   // contract as the sheets/slides opened hooks (a plain save to the original
   // path never renames the tab, so the open must — r115)
   setDocsFileOpenedHook((wcId, path) => {
     manager.setTabFileFor(wcId, path)
+    detachedSetFileFor(wcId, path)
     recordRecentFile(path)
-    applyPendingProject(path)
+    applyPendingDir(wcId, path)
   })
   // markdown untitled first save / Save As lands on a new path
   setMarkdownFileSavedHook((wc, path) => {
     manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
     recordRecentFile(path)
-    applyPendingProject(path)
+    applyPendingDir(wc.id, path)
+  })
+  setHtmlFileSavedHook((wc, path) => {
+    manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
+    recordRecentFile(path)
+    applyPendingDir(wc.id, path)
+  })
+  setHtmlProvisionalTitleHook((wc, title) => {
+    manager.setTabTitleFor(wc.id, title)
+    detachedSetTitleFor(wc.id, title)
+  })
+  // A redacted copy becomes this tab's document; the source still exists.
+  setPdfRedactionSavedHook((wc, path) => {
+    manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
+    recordRecentFile(path)
+    applyPendingDir(wc.id, path)
   })
   // pdf content-derived auto-rename: the file moved on disk, follow it everywhere
   setPdfRenamedHook((wc, oldPath, newPath) => {
     manager.setTabFileFor(wc.id, newPath)
+    detachedSetFileFor(wc.id, newPath)
     replaceRecentFile(oldPath, newPath)
     projectFileRenamed(oldPath, newPath)
   })
   // markdown "convert & open in Docs" → route the fresh .docx to a docs tab
   setMarkdownDocxExportedHook((path) => {
+    openDocumentPath(path)
+  })
+  // Word export to a path already open in a docs tab: close that tab before the file is
+  // written (its unsaved-changes prompt applies, and a later save of the stale document
+  // could otherwise overwrite the export); a cancelled close aborts the export.
+  setHtmlDocxExportPrepareHook(async (path) => {
+    const stale = manager.findDocsTabByPath(path)
+    if (!stale) return true
+    const active = manager.list().find((t) => t.active)?.id
+    await manager.closeTab(stale)
+    if (active && active !== stale) manager.activateTab(active)
+    return !manager.findDocsTabByPath(path)
+  })
+  setHtmlDocxExportedHook((path) => {
     openDocumentPath(path)
   })
 
@@ -2485,47 +3238,65 @@ function createShellWindow(): void {
     const dirtySheets = manager.dirtySheetsTabs()
     const dirtyPdf = manager.dirtyPdfTabs()
     const dirtyMarkdown = manager.dirtyMarkdownTabs()
+    const dirtyHtml = manager.dirtyHtmlTabs()
     const dirtySlides = manager.dirtySlidesTabs()
     const docsTabs = manager.docsTabs()
     if (
       dirtySheets.length === 0 &&
       dirtyPdf.length === 0 &&
       dirtyMarkdown.length === 0 &&
+      dirtyHtml.length === 0 &&
       dirtySlides.length === 0 &&
       docsTabs.length === 0
     )
       return
     event.preventDefault()
     void (async () => {
-      for (const tab of dirtySheets) {
-        manager.activateTab(tab.id)
-        if (!(await requestSheetsClose(tab.webContents, win))) return
+      const denied = await (async () => {
+        for (const tab of dirtySheets) {
+          manager.activateTab(tab.id)
+          if (!(await requestSheetsClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtyPdf) {
+          manager.activateTab(tab.id)
+          if (!(await requestPdfClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtyMarkdown) {
+          manager.activateTab(tab.id)
+          if (!(await requestMarkdownClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtyHtml) {
+          manager.activateTab(tab.id)
+          if (!(await requestHtmlClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtySlides) {
+          manager.activateTab(tab.id)
+          if (!(await requestSlidesClose(tab.webContents, win))) return true
+        }
+        for (const tab of docsTabs) {
+          if (!(await docsQueryDirty(tab.webContents))) continue
+          manager.activateTab(tab.id)
+          if (!(await requestDocsClose(tab.webContents, win))) return true
+        }
+        return false
+      })()
+      // a denied close vetoes any quit that was in flight: the sheets close
+      // guard must prompt again on later closes instead of silently proceeding
+      if (denied) resetSheetsShuttingDown()
+      else {
+        closeConfirmed = true
+        if (!win.isDestroyed()) win.close()
       }
-      for (const tab of dirtyPdf) {
-        manager.activateTab(tab.id)
-        if (!(await requestPdfClose(tab.webContents, win))) return
-      }
-      for (const tab of dirtyMarkdown) {
-        manager.activateTab(tab.id)
-        if (!(await requestMarkdownClose(tab.webContents, win))) return
-      }
-      for (const tab of dirtySlides) {
-        manager.activateTab(tab.id)
-        if (!(await requestSlidesClose(tab.webContents, win))) return
-      }
-      for (const tab of docsTabs) {
-        if (!(await docsQueryDirty(tab.webContents))) continue
-        manager.activateTab(tab.id)
-        if (!(await requestDocsClose(tab.webContents, win))) return
-      }
-      closeConfirmed = true
-      if (!win.isDestroyed()) win.close()
     })()
   })
 
   win.on('closed', () => {
     if (shellWindow === win) shellWindow = null
-    if (tabManager === manager) tabManager = null
+    if (tabManager === manager) {
+      tabManager = null
+      setDockHost(null)
+      publishAllOpenDocuments()
+    }
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -2538,13 +3309,11 @@ function createShellWindow(): void {
 // ---- routing: one dispatch function for every open path ----
 
 const DOCX_RE = /\.docx$/i
-const XLSX_RE = /\.(xlsx|xlsm|xls|csv)$/i
+const XLSX_RE = /\.(xlsx|xlsm|xls|csv|tsv)$/i
 const PPTX_RE = /\.pptx$/i
 const PDF_RE = /\.pdf$/i
 const MD_RE = /\.(md|markdown)$/i
-
-/** document formats we recognize but don't open — surfaced as a dialog, not silently dropped */
-const UNSUPPORTED_DOC_RE = /\.(doc|rtf|odt|ppt|pps|odp|ods|xlsb|pages|key|numbers)$/i
+const HTML_RE = /\.html?$/i
 
 /**
  * Single source of truth for the open-dialog filter. Includes the
@@ -2558,30 +3327,15 @@ const OPEN_DIALOG_EXTENSIONS = [
   'xlsm',
   'xls',
   'csv',
+  'tsv',
   'pptx',
   'ppt',
   'pdf',
   'md',
   'markdown',
+  'html',
+  'htm',
 ]
-
-function supportedFileIn(argv: string[]): string | null {
-  return (
-    argv.find(
-      (arg) =>
-        (DOCX_RE.test(arg) ||
-          XLSX_RE.test(arg) ||
-          PPTX_RE.test(arg) ||
-          PDF_RE.test(arg) ||
-          MD_RE.test(arg)) &&
-        existsSync(arg),
-    ) ?? null
-  )
-}
-
-function unsupportedFileIn(argv: string[]): string | null {
-  return argv.find((arg) => UNSUPPORTED_DOC_RE.test(arg) && existsSync(arg)) ?? null
-}
 
 function notifyUnsupportedFile(filePath: string): void {
   const ext = extname(filePath).slice(1).toLowerCase() || basename(filePath)
@@ -2605,14 +3359,16 @@ function showAppWarning(message: string): void {
  * and route through the normal File > Open pipeline; detached editor windows
  * can host the drop target, so the shell must reveal itself after opening.
  */
+const droppedFilesDeps = () => ({
+  openDocumentPath,
+  revealShellWindow,
+  showWarning: showAppWarning,
+  unsupportedMessage: (exts: string[]) => tm('errUnsupportedExt', { ext: exts.join(', ') }),
+})
+
 function registerDroppedFilesIpc(): void {
   ipcMain.on(DROP_OPEN_CHANNEL, (_event, raw: unknown) =>
-    handleDroppedFiles(raw, {
-      openDocumentPath,
-      revealShellWindow,
-      showWarning: showAppWarning,
-      unsupportedMessage: (exts) => tm('errUnsupportedExt', { ext: exts.join(', ') }),
-    }),
+    handleDroppedFiles(raw, droppedFilesDeps()),
   )
 }
 
@@ -2647,7 +3403,10 @@ function openGeneratedDocument(filePath: string): boolean {
 }
 
 function routeDocumentPath(filePath: string): boolean {
-  if (!existsSync(filePath) || !tabManager) return false
+  if (!existsSync(filePath)) return false
+  // a detached editor window already shows this file — focus it, never a second copy
+  if (focusDetachedByPath(filePath)) return true
+  if (!tabManager) return false
   if (DOCX_RE.test(filePath)) {
     recordRecentFile(filePath)
     const existing = tabManager.findDocsTabByPath(filePath)
@@ -2691,32 +3450,74 @@ function routeDocumentPath(filePath: string): boolean {
     else tabManager.openMarkdownTab(filePath)
     return true
   }
+  if (HTML_RE.test(filePath)) {
+    recordRecentFile(filePath)
+    const existing = tabManager.findHtmlTabByPath(filePath)
+    if (existing) tabManager.activateTab(existing)
+    else tabManager.openHtmlTab(filePath)
+    return true
+  }
   notifyUnsupportedFile(filePath)
   return false
 }
 
 /**
- * "New spreadsheet" creates the backing .xlsx in the default folder up front and
- * opens it as a regular file tab — the blank in-memory demo mode has no save
- * pipeline, so the file must exist before edits. Falls back to the old blank
- * tab if the write fails.
+ * "New spreadsheet" no longer drops a file in the default folder up front: the
+ * blank workbook is created in a temp directory and its first Save goes through
+ * Save As (the same path an .xls/.tsv import takes), so a new tab that is
+ * closed without saving leaves nothing behind to delete by hand — the temp
+ * directory is discarded with the session. The save pipeline still needs a real
+ * file to edit, hence the backing workbook rather than the in-memory blank grid.
+ * Falls back to a file in the default folder, then to the in-memory blank tab.
  */
-async function newSheetTab(): Promise<void> {
+async function newSheetTab(recoverAs?: string): Promise<void> {
+  // recoverAs: the would-be path of a new workbook whose recovery copy
+  // survived a crash; the sheets module offers it under that name
+  const dir = newFileDir('sheet')
+  let suggestedPath = recoverAs ?? uniquePathIn(dir, `${tm('untitledSheet')}.xlsx`)
+  // nothing is on disk yet, so two new tabs would otherwise be promised the same name
+  for (let i = 2; !recoverAs && sheetsSuggestedPathTaken(suggestedPath); i++)
+    suggestedPath = uniquePathIn(dir, `${tm('untitledSheet')} ${i}.xlsx`)
   try {
-    const filePath = uniquePathIn(defaultSaveDir(), `${tm('untitledSheet')}.xlsx`)
-    writeFileSync(filePath, await blankXlsxBuffer())
+    // under the import root so the session-close cleanup removes it like an import copy
+    const tempDir = join(app.getPath('temp'), 'genoffice-imports', randomUUID())
+    mkdirSync(tempDir, { recursive: true })
+    const backingPath = join(tempDir, basename(suggestedPath))
+    // reserve the name before the first await so a second new tab picks another;
+    // the first Save As starts from the name the file would have had
+    markSheetsUnsavedNew(backingPath, suggestedPath, tempDir)
+    try {
+      await atomicWriteFile(backingPath, await blankXlsxBuffer())
+    } catch (err) {
+      unmarkSheetsUnsavedNew(backingPath)
+      throw err
+    }
     // eligible for content-derived auto-rename after the first AI generation
-    markSheetsUntitledPath(filePath)
-    // route directly (not via openDocumentPath) so creating a sheet emits
-    // only file_new — the file_open event is reserved for opening existing files
-    if (routeDocumentPath(filePath)) recordStarPromptDocOpen()
+    markSheetsUntitledPath(backingPath)
+    tabManager?.openSheetsTab(backingPath)
+    startQueuedWorkbookNudge()
+    // no recent-file entry yet: there is no user-visible file until it is saved
+    recordStarPromptDocOpen()
     analytics.track('file_new', { kind: 'xlsx' })
   } catch (err) {
-    console.warn('[shell] blank workbook create failed, opening in-memory blank tab:', err)
+    console.warn('[shell] temp workbook create failed, writing to the default folder:', err)
     try {
-      tabManager?.openSheetsTab(undefined, { newBlank: true })
+      await atomicWriteFile(suggestedPath, await blankXlsxBuffer())
+      markSheetsUntitledPath(suggestedPath)
+      // route directly (not via openDocumentPath) so creating a sheet emits
+      // only file_new — the file_open event is reserved for opening existing files
+      if (routeDocumentPath(suggestedPath)) recordStarPromptDocOpen()
+      analytics.track('file_new', { kind: 'xlsx' })
     } catch (fallbackErr) {
-      surfaceNewTabError(fallbackErr)
+      console.warn(
+        '[shell] blank workbook create failed, opening in-memory blank tab:',
+        fallbackErr,
+      )
+      try {
+        tabManager?.openSheetsTab(undefined, { newBlank: true })
+      } catch (finalErr) {
+        surfaceNewTabError(finalErr)
+      }
     }
   }
 }
@@ -2734,7 +3535,7 @@ function surfaceNewTabError(err: unknown): void {
 
 function newDocTab(): void {
   try {
-    tabManager?.openDocsTab(undefined, { newBlank: true })
+    bindPendingDir('doc', tabManager?.openDocsTab(undefined, { newBlank: true }))
     // creating a document is as much a value moment as opening one
     recordStarPromptDocOpen()
     analytics.track('file_new', { kind: 'docx' })
@@ -2743,9 +3544,108 @@ function newDocTab(): void {
   }
 }
 
+/** MCP: open a blank docs tab and return its webContents id, for the visible-editor bridge */
+function openBlankDocsTabForMcp(): number {
+  if (!tabManager) throw new Error('GenOffice is not ready')
+  const tabId = tabManager.openDocsTab(undefined, { newBlank: true })
+  const view = tabManager.docsTabs().find((t) => t.id === tabId)
+  if (!view) throw new Error('the new document tab could not be opened')
+  recordStarPromptDocOpen()
+  analytics.track('file_new', { kind: 'docx' })
+  return view.webContents.id
+}
+
+/**
+ * MCP: open a blank sheets tab and return its webContents id, for the
+ * visible-grid bridge. Like the app's own "new spreadsheet", a real blank
+ * .xlsx is created up front (the save pipeline needs an on-disk workbook;
+ * the fallback in-memory demo grid cannot save) — but the AI auto-rename
+ * marking is skipped, the file name is the agent's business.
+ */
+async function openBlankSheetsTabForMcp(): Promise<number> {
+  if (!tabManager) throw new Error('GenOffice is not ready')
+  const filePath = uniquePathIn(defaultSaveDir(), `${tm('untitledSheet')}.xlsx`)
+  await atomicWriteFile(filePath, await blankXlsxBuffer())
+  const tabId = tabManager.openSheetsTab(filePath)
+  const view = tabManager.sheetsTabs().find((t) => t.id === tabId)
+  if (!view) {
+    // the tab never appeared, so nothing will ever consume this file
+    try {
+      rmSync(filePath)
+    } catch (error) {
+      console.warn('[mcp] could not remove the unused blank workbook:', error)
+    }
+    throw new Error('the new spreadsheet tab could not be opened')
+  }
+  const wcId = view.webContents.id
+  mcpBlankSheetPaths.set(wcId, filePath)
+  view.webContents.once('destroyed', () => mcpBlankSheetPaths.delete(wcId))
+  // Same nudge the interactive path uses: the renderer subscribes to the open
+  // action only after Univer mounts, so a single push can land in the void on a
+  // cold start and leave the tab sitting on a blank in-memory workbook.
+  startQueuedWorkbookNudge()
+  recordStarPromptDocOpen()
+  analytics.track('file_new', { kind: 'xlsx' })
+  return view.webContents.id
+}
+
+/** backing files of blank sheets tabs created by the MCP session tools */
+const mcpBlankSheetPaths = new Map<number, string>()
+
+/**
+ * MCP: drop a blank sheets tab whose session never became ready, and delete the
+ * empty workbook created for it. Without this a failed `create_session` leaves
+ * an orphan tab plus an .xlsx in the default save folder that the user never
+ * asked for — and nothing in the MCP surface can clean either one up.
+ */
+function abandonBlankSheetsTabForMcp(wcId: number): void {
+  const manager = tabManager
+  const filePath = mcpBlankSheetPaths.get(wcId)
+  mcpBlankSheetPaths.delete(wcId)
+  if (!manager) return
+  // the grid may already be usable while the MCP bridge is not: keep anything the user typed
+  if (manager.dirtySheetsTabs().some((t) => t.webContents.id === wcId)) return
+  if (!abandonBlankTabForMcp(manager.sheetsTabs(), wcId)) return
+  if (!filePath) return
+  try {
+    if (existsSync(filePath)) rmSync(filePath)
+  } catch (error) {
+    console.warn('[mcp] could not remove the unused blank workbook:', error)
+  }
+}
+
+/**
+ * MCP: close a tab whose session never became ready. Returns false when the
+ * tab could not be closed (it is already gone, or the close failed).
+ */
+function abandonBlankTabForMcp(
+  tabs: Array<{ id: string; webContents: WebContents }>,
+  wcId: number,
+): boolean {
+  const tab = tabs.find((t) => t.webContents.id === wcId)
+  if (!tab || !tabManager) return false
+  try {
+    return tabManager.closeTabWithoutPrompt(tab.id)
+  } catch (error) {
+    console.warn('[mcp] could not close the unused tab:', error)
+    return false
+  }
+}
+
+/** MCP: open a blank slides tab and return its webContents id, for the visible-deck bridge */
+function openBlankSlidesTabForMcp(): number {
+  if (!tabManager) throw new Error('GenOffice is not ready')
+  const tabId = tabManager.openSlidesTab()
+  const view = tabManager.slidesTabs().find((t) => t.id === tabId)
+  if (!view) throw new Error('the new presentation tab could not be opened')
+  recordStarPromptDocOpen()
+  analytics.track('file_new', { kind: 'pptx' })
+  return view.webContents.id
+}
+
 function newSlideTab(): void {
   try {
-    tabManager?.openSlidesTab()
+    bindPendingDir('slide', tabManager?.openSlidesTab())
     recordStarPromptDocOpen()
     analytics.track('file_new', { kind: 'pptx' })
   } catch (err) {
@@ -2755,9 +3655,19 @@ function newSlideTab(): void {
 
 function newMarkdownTab(): void {
   try {
-    tabManager?.openMarkdownTab()
+    bindPendingDir('markdown', tabManager?.openMarkdownTab())
     recordStarPromptDocOpen()
     analytics.track('file_new', { kind: 'md' })
+  } catch (err) {
+    surfaceNewTabError(err)
+  }
+}
+
+function newHtmlTab(): void {
+  try {
+    bindPendingDir('html', tabManager?.openHtmlTab())
+    recordStarPromptDocOpen()
+    analytics.track('file_new', { kind: 'html' })
   } catch (err) {
     surfaceNewTabError(err)
   }
@@ -2770,12 +3680,10 @@ function newMarkdownTab(): void {
  */
 async function newPdfTab(): Promise<void> {
   try {
-    const filePath = uniquePathIn(defaultSaveDir(), `${tm('untitledPdf')}.pdf`)
-    writeFileSync(filePath, await blankPdfBuffer())
+    const filePath = uniquePathIn(newFileDir('pdf'), `${tm('untitledPdf')}.pdf`)
+    await atomicWriteFile(filePath, await blankPdfBuffer())
     // Opt the file into content-derived auto-naming on its first save
     markPdfUntitledPath(filePath)
-    // PDF has no opened/saved shell hook — assign the pending project right here
-    applyPendingProject(filePath)
     // route directly (not via openDocumentPath) so creating a pdf emits only
     // file_new and counts one doc-open — same as the blank workbook above
     if (routeDocumentPath(filePath)) recordStarPromptDocOpen()
@@ -2876,11 +3784,76 @@ function registerHomeIpc(): void {
     pageRecentPaths(readRecentFiles(), query, new Set(readStarredFiles())),
   )
 
+  ipcMain.handle(HOME_CHANNELS.searchFiles, (_event, raw: unknown): FileSearchPage => {
+    const query = (raw && typeof raw === 'object' ? raw : {}) as Partial<FileSearchQuery>
+    const indexer = ensureFileIndexer()
+    if (!indexer || !fileIndexStore) {
+      return { hits: [], total: 0, index: { indexed: 0, pending: 0, scanning: false } }
+    }
+    // an open search box is the moment a stale index shows; rescan at most once a minute
+    indexer.refreshIfStale(60_000)
+    const q = typeof query.q === 'string' ? query.q.trim().slice(0, 200) : ''
+    const filter = typeof query.ext === 'string' ? query.ext : ''
+    const exts = filter && filter !== 'all' ? (SEARCH_EXT_FAMILY[filter] ?? [filter]) : undefined
+    const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset!)) : 0
+    const limit = Number.isFinite(query.limit) ? Math.max(0, Math.floor(query.limit!)) : 50
+    const starred = new Set(readStarredFiles())
+    const result = q ? fileIndexStore.search(q, { exts, offset, limit }) : { hits: [], total: 0 }
+    return {
+      hits: result.hits.map((h) => ({ ...h, starred: starred.has(h.path) })),
+      total: result.total,
+      index: indexer.progress(),
+    }
+  })
+
+  ipcMain.handle(
+    HOME_CHANNELS.rerankSearch,
+    async (_event, raw: unknown): Promise<FileSearchRerank | null> => {
+      const settings = readFileSearchSettings()
+      if (!settings.rerank) return null
+      const query = (raw && typeof raw === 'object' ? raw : {}) as { q?: unknown; paths?: unknown }
+      const q = typeof query.q === 'string' ? query.q.trim().slice(0, 200) : ''
+      const paths = Array.isArray(query.paths)
+        ? query.paths.filter((p): p is string => typeof p === 'string').slice(0, 20)
+        : []
+      if (!q || paths.length < 2 || !ensureFileIndexer() || !fileIndexStore) return null
+      searchReranker ??= new SearchReranker(fileIndexStore)
+      return searchReranker.rerank(q, paths, settings)
+    },
+  )
+
+  ipcMain.handle(HOME_CHANNELS.getFileSearchSettings, (): FileSearchSettings =>
+    readFileSearchSettings(),
+  )
+
+  ipcMain.handle(
+    HOME_CHANNELS.setFileSearchSettings,
+    (_event, patch: unknown): FileSearchSettings => {
+      const current = readFileSearchSettings()
+      const p = (patch && typeof patch === 'object' ? patch : {}) as Partial<FileSearchSettings>
+      const next = normalizeFileSearchSettings({
+        ...current,
+        ...p,
+        jevKeys: { ...current.jevKeys, ...(p.jevKeys ?? {}) },
+      })
+      writeAppSetting(APP_SETTINGS_PATH(), 'fileSearch', next)
+      return next
+    },
+  )
+
+  ipcMain.handle(HOME_CHANNELS.testFileSearchRerank, (_event, input: unknown) => {
+    const { endpoint, apiKey } = (input && typeof input === 'object' ? input : {}) as {
+      endpoint?: unknown
+      apiKey?: unknown
+    }
+    return probeJev(jevEndpointOf(endpoint), typeof apiKey === 'string' ? apiKey : '')
+  })
+
   // Starred files sort by mtime, which requires stat-ing them all first; they are hand-picked and few, so this is fine
   ipcMain.handle(HOME_CHANNELS.starred, (_event, query: unknown): RecentPage => {
     const { offset, limit, ext } = normalizeRecentQuery(query)
     const all = statEntries(readStarredFiles()).sort((a, b) => b.mtimeMs - a.mtimeMs)
-    const filtered = ext ? all.filter((entry) => entry.ext === ext) : all
+    const filtered = ext ? all.filter((entry) => matchesExtFamily(entry.ext, ext)) : all
     return {
       entries: limit === 0 ? [] : filtered.slice(offset, offset + limit),
       total: filtered.length,
@@ -2897,7 +3870,9 @@ function registerHomeIpc(): void {
   })
 
   ipcMain.handle(HOME_CHANNELS.openPath, (_event, path: unknown) => {
-    if (typeof path === 'string') openDocumentPath(path)
+    if (typeof path !== 'string' || !path || path.length > 4096) return
+    openDocumentPath(path)
+    fileIndexer?.refresh()
   })
 
   ipcMain.handle(HOME_CHANNELS.browse, async (event) => {
@@ -2908,48 +3883,44 @@ function registerHomeIpc(): void {
       filters: [
         { name: tm('filterSupported'), extensions: OPEN_DIALOG_EXTENSIONS },
         { name: tm('filterWord'), extensions: ['docx', 'doc'] },
-        { name: tm('filterExcel'), extensions: ['xlsx', 'xlsm', 'xls', 'csv'] },
+        { name: tm('filterExcel'), extensions: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv'] },
         { name: tm('filterPpt'), extensions: ['pptx', 'ppt'] },
         { name: tm('filterPdf'), extensions: ['pdf'] },
         { name: tm('filterMarkdown'), extensions: ['md', 'markdown'] },
+        { name: tm('filterHtml'), extensions: ['html', 'htm'] },
       ],
       properties: ['openFile', 'multiSelections'],
     })
     if (!result.canceled) for (const path of result.filePaths) openDocumentPath(path)
   })
 
-  ipcMain.handle(HOME_CHANNELS.newDoc, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('doc', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newDoc, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('doc', opts)
     newDocTab()
   })
 
-  ipcMain.handle(HOME_CHANNELS.newSheet, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('sheet', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newSheet, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('sheet', opts)
     void newSheetTab()
   })
 
-  ipcMain.handle(HOME_CHANNELS.newSlide, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('slide', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newSlide, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('slide', opts)
     newSlideTab()
   })
 
-  ipcMain.handle(HOME_CHANNELS.newMarkdown, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('markdown', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newMarkdown, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('markdown', opts)
     newMarkdownTab()
   })
 
-  ipcMain.handle(HOME_CHANNELS.newPdf, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('pdf', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newHtml, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('html', opts)
+    newHtmlTab()
+  })
+
+  ipcMain.handle(HOME_CHANNELS.newPdf, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('pdf', opts)
     void newPdfTab()
   })
 
@@ -2970,35 +3941,32 @@ function registerHomeIpc(): void {
     (_event, path: unknown, newName: unknown): RenameResult => {
       if (typeof path !== 'string' || typeof newName !== 'string')
         return { ok: false, error: tm('errBadArgs') }
+      // Validate the raw name before trimming: trimming first would
+      // silently turn "report " into "report" and make the
+      // trailing-space gate in isValidRenameName unreachable. Reject
+      // with the localized gate instead of renaming to a different
+      // name than requested.
+      if (!isValidRawRenameName(newName)) return { ok: false, error: tm('errBadName') }
       const name = newName.trim()
-      if (!name || /[\\/:]/.test(name)) return { ok: false, error: tm('errBadName') }
       if (!existsSync(path)) return { ok: false, error: tm('errMissing') }
       const target = join(dirname(path), name)
       if (target === path) return { ok: true, path }
-      if (existsSync(target)) return { ok: false, error: tm('errExists') }
+      // A case-only rename (Report.pdf -> report.pdf) hits the source itself on
+      // case-insensitive filesystems; only a genuinely different file blocks.
+      if (existsSync(target) && !isSameFile(path, target)) {
+        return { ok: false, error: tm('errExists') }
+      }
       try {
         renameSync(path, target)
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : tm('errRenameFailed') }
       }
-      replaceRecentFile(path, target)
-      // project-store's fileMap/chatIdByPath re-key too, so AI chat history follows the file
-      projectFileRenamed(path, target)
-      // the slides module's own recent list switches to the new path as well (used by the start screen)
-      if (/\.pptx$/i.test(target)) void replaceSlidesRecentFile(path, target)
-      // open tabs sync their title/path; each editor then syncs its internal save path and title bar
-      const affected = tabManager?.renameTabFile(path, target) ?? []
-      for (const t of affected) {
-        if (t.kind === 'slides') slidesFileRenamed(t.webContents, path, target)
-        else if (t.kind === 'docs') docsFileRenamed(t.webContents, path, target)
-        else if (t.kind === 'sheets') sheetsFileRenamed(t.webContents, path, target)
-        else if (t.kind === 'markdown') markdownFileRenamed(t.webContents, path, target)
-      }
+      afterFileMoved(path, target)
       return { ok: true, path: target }
     },
   )
 
-  ipcMain.handle(HOME_CHANNELS.duplicateFile, (_event, path: unknown) => {
+  ipcMain.handle(HOME_CHANNELS.duplicateFile, async (_event, path: unknown) => {
     if (typeof path !== 'string' || !existsSync(path)) return
     const ext = extname(path)
     const base = basename(path, ext)
@@ -3006,7 +3974,12 @@ function registerHomeIpc(): void {
     for (let i = 1; ; i++) {
       const target = join(dir, `${base} ${tm('copySuffix')}${i === 1 ? '' : ` ${i}`}${ext}`)
       if (existsSync(target)) continue
-      copyFileSync(path, target)
+      try {
+        await atomicCopyFile(path, target)
+      } catch (err) {
+        showErrorDialog(shellWindow, tm('errDuplicateFailed'), err)
+        return
+      }
       recordRecentFile(target)
       return
     }
@@ -3081,7 +4054,71 @@ function registerHomeIpc(): void {
     cachedTheme = theme
     writeAppSetting(APP_SETTINGS_PATH(), 'theme', theme)
     nativeTheme.themeSource = theme
+    refreshTitleBarOverlay()
     for (const wc of webContents.getAllWebContents()) wc.send('app:theme-changed', theme)
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getAutoSaveDefault, (): AutoSaveDefault => currentAutoSaveDefault())
+  ipcMain.handle('app:get-auto-save-default', (): AutoSaveDefault => currentAutoSaveDefault())
+
+  ipcMain.handle(HOME_CHANNELS.setAutoSaveDefault, (_event, on: unknown) => {
+    if (typeof on !== 'boolean') return
+    if (on === currentAutoSaveDefault().on) return
+    const next: AutoSaveDefault = { on, updatedAt: Date.now() }
+    cachedAutoSaveDefault = next
+    writeAppSettings(APP_SETTINGS_PATH(), {
+      autoSaveDefault: next.on,
+      autoSaveDefaultUpdatedAt: next.updatedAt,
+    })
+    for (const wc of webContents.getAllWebContents()) wc.send('app:auto-save-default-changed', next)
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getMcpStatus, () => mcpStatus())
+
+  ipcMain.handle(HOME_CHANNELS.setMcpSettings, async (_event, patch: unknown) => {
+    if (!patch || typeof patch !== 'object') return mcpStatus()
+    const request = patch as {
+      enabled?: unknown
+      port?: unknown
+      background?: unknown
+      logging?: unknown
+    }
+    const current = currentMcpSettings()
+    const enabled = typeof request.enabled === 'boolean' ? request.enabled : current.enabled
+    const port =
+      typeof request.port === 'number' &&
+      Number.isInteger(request.port) &&
+      request.port > 0 &&
+      request.port < 65536
+        ? request.port
+        : current.port
+    const background =
+      typeof request.background === 'boolean' ? request.background : current.background
+    const logging = typeof request.logging === 'boolean' ? request.logging : current.logging
+    writeAppSettings(APP_SETTINGS_PATH(), {
+      mcpEnabled: enabled,
+      mcpPort: port,
+      mcpBackground: background,
+      mcpLogging: logging,
+    })
+    try {
+      return await applyMcpSettings({ enabled, port, background, logging })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { ...mcpStatus(), error: message }
+    }
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getMcpLogs, () => getMcpRecentLogs())
+
+  ipcMain.handle(HOME_CHANNELS.clearMcpLogs, () => {
+    clearMcpLogs()
+  })
+
+  ipcMain.handle(HOME_CHANNELS.openMcpLogFile, () => {
+    revealMcpLogFile()
+    const logPath = mcpLogFilePath()
+    if (logPath) shell.showItemInFolder(logPath)
   })
 
   ipcMain.handle(HOME_CHANNELS.getAnalyticsEnabled, (): boolean => analyticsEnabled())
@@ -3091,9 +4128,211 @@ function registerHomeIpc(): void {
     return persistAnalyticsPreference(enabled)
   })
 
+  ipcMain.handle(HOME_CHANNELS.getAiPanelPrefs, (): AiPanelPrefs => currentAiPanelPrefs())
+  ipcMain.handle('app:get-ai-panel-prefs', (): AiPanelPrefs => currentAiPanelPrefs())
+
+  const setAiPanelPrefs = (patch: unknown): AiPanelPrefs => {
+    const prev = currentAiPanelPrefs()
+    const raw =
+      patch !== null && typeof patch === 'object' ? (patch as Record<string, unknown>) : {}
+    // unknown/malformed fields fall back to the previous value, not the default
+    const next = normalizeAiPanelPrefs({
+      side: raw.side === 'left' || raw.side === 'right' ? raw.side : prev.side,
+      fontSize: 'fontSize' in raw ? raw.fontSize : prev.fontSize,
+      customFontSize: 'customFontSize' in raw ? raw.customFontSize : prev.customFontSize,
+      spellcheck: 'spellcheck' in raw ? raw.spellcheck : prev.spellcheck,
+      openInNewDocs: 'openInNewDocs' in raw ? raw.openInNewDocs : prev.openInNewDocs,
+    })
+    if (sameAiPanelPrefs(next, prev)) return prev
+    cachedAiPanelPrefs = next
+    writeAppSettings(APP_SETTINGS_PATH(), {
+      aiPanelSide: next.side,
+      aiPanelFontSize: next.fontSize,
+      aiPanelCustomFontSize: next.customFontSize,
+      aiPanelSpellcheck: next.spellcheck,
+      aiPanelOpenInNewDocs: next.openInNewDocs,
+    })
+    for (const wc of webContents.getAllWebContents()) wc.send('app:ai-panel-prefs-changed', next)
+    return next
+  }
+  ipcMain.handle(HOME_CHANNELS.setAiPanelPrefs, (_event, patch) => setAiPanelPrefs(patch))
+  ipcMain.handle('app:set-ai-panel-prefs', (_event, patch) => setAiPanelPrefs(patch))
+
   // effective folder where new/untitled files land; the editor mains resolve
   // the same setting themselves (configuredDefaultSaveDir via docs' defaultSaveDir)
+  // ── folder tree over the default save folder ──
+  const folderErrors = (): FolderErrors => ({
+    badArgs: tm('errBadArgs'),
+    badName: tm('errBadName'),
+    missing: tm('errMissing'),
+    exists: tm('errExists'),
+    failed: tm('errRenameFailed'),
+  })
+  const insideRoot = (path: unknown): path is string =>
+    typeof path === 'string' && insideAnyRoot(path)
+  const isRoot = (path: string) => isAnyRoot(path)
+
+  ipcMain.handle(HOME_CHANNELS.folderRoots, (): FolderRoot[] => {
+    // describeRoot creates a missing save folder, so its watcher has something to attach to
+    const roots = [describeRoot(defaultSaveDir()), ...extraFolderRoots().map(describeExtraRoot)]
+    ensureFolderWatchers()
+    return roots
+  })
+
+  // an added folder joins the tree where it is: nothing on disk is created, copied or moved
+  const addFolderRoot = (path: string): FolderRoot | null => {
+    const extras = withExtraRoot(extraFolderRoots(), defaultSaveDir(), path)
+    if (!extras) return null
+    writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
+    ensureFolderWatchers()
+    fileIndexer?.refresh()
+    return describeExtraRoot(path)
+  }
+
+  ipcMain.handle(HOME_CHANNELS.addFolderRoot, async (): Promise<FolderRoot | null> => {
+    const result = await showOpenDialogWithMemory(dialog, shellWindow, {
+      title: tm('dlgAddFolderRoot'),
+      properties: ['openDirectory'],
+    })
+    const picked = result.filePaths[0]
+    if (result.canceled || !picked) return null
+    if (!describeExtraRoot(picked).readable) {
+      showErrorDialog(shellWindow, tm('errFolderRootUnusable'), picked)
+      return null
+    }
+    return addFolderRoot(picked)
+  })
+
+  ipcMain.handle(HOME_CHANNELS.dropFolderRoots, (_event, paths: unknown): FolderRoot[] => {
+    const added: FolderRoot[] = []
+    const files: string[] = []
+    for (const path of stringPaths(paths)) {
+      if (!describeExtraRoot(path).readable) {
+        files.push(path)
+        continue
+      }
+      const root = addFolderRoot(path)
+      if (root) added.push(root)
+    }
+    if (files.length > 0) handleDroppedFiles(files, droppedFilesDeps())
+    return added
+  })
+
+  ipcMain.handle(HOME_CHANNELS.removeFolderRoot, (_event, path: unknown) => {
+    if (typeof path !== 'string') return
+    const extras = withoutExtraRoot(extraFolderRoots(), path)
+    writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
+    ensureFolderWatchers()
+    fileIndexer?.refresh()
+  })
+
+  ipcMain.handle(HOME_CHANNELS.listFolder, (_event, dir: unknown): FolderListing => {
+    if (!insideRoot(dir)) return { dir: String(dir), folders: [], files: [] }
+    return listFolder(dir, new Set(readStarredFiles()))
+  })
+
+  ipcMain.handle(
+    HOME_CHANNELS.createFolder,
+    (_event, parent: unknown, name: unknown): RenameResult => {
+      if (!insideRoot(parent) || typeof name !== 'string')
+        return { ok: false, error: tm('errBadArgs') }
+      return createFolder(parent, name, folderErrors())
+    },
+  )
+
+  ipcMain.handle(
+    HOME_CHANNELS.renameFolder,
+    (_event, dir: unknown, newName: unknown): RenameResult => {
+      if (!insideRoot(dir) || isRoot(dir) || typeof newName !== 'string')
+        return { ok: false, error: tm('errBadArgs') }
+      const filesBefore = trackedFilesUnder(dir)
+      const result = renameFolder(dir, newName, folderErrors())
+      if (result.ok && result.path && result.path !== dir) {
+        afterFolderMoved(dir, result.path, filesBefore)
+      }
+      return result
+    },
+  )
+
+  ipcMain.handle(
+    HOME_CHANNELS.movePaths,
+    async (_event, paths: unknown, targetDir: unknown, policy: unknown): Promise<MoveResult> => {
+      const list = stringPaths(paths)
+      if (!insideRoot(targetDir)) {
+        const error = tm('errBadArgs')
+        return { moved: [], conflicts: [], failed: list.map((path) => ({ path, error })) }
+      }
+      const conflictPolicy: MoveConflictPolicy =
+        policy === 'replace' || policy === 'keepBoth' || policy === 'skip' ? policy : 'ask'
+      const isDir = (p: string) => {
+        try {
+          return statSync(p).isDirectory()
+        } catch {
+          return false
+        }
+      }
+      // files may come from anywhere (the Recent list); folders only from inside the tree, never a root itself
+      const sources = list.filter((p) => !isDir(p) || (insideAnyRoot(p) && !isAnyRoot(p)))
+      const dirFiles = new Map(sources.filter(isDir).map((p) => [p, trackedFilesUnder(p)]))
+      // 'replace' must not destroy data: the displaced target goes to the trash,
+      // and everything keyed on its path (recents, stars, chat history) leaves
+      // with it so the incoming file does not inherit another document's record
+      const displaced: string[] = []
+      const result = movePathsInto(sources, targetDir, conflictPolicy, folderErrors(), {
+        replaceExisting: (path) => {
+          const parked = join(dirname(path), `.genoffice-replaced-${Date.now()}-${basename(path)}`)
+          const files = isDir(path) ? trackedFilesUnder(path) : [path]
+          renameSync(path, parked)
+          return {
+            commit: () => {
+              displaced.push(parked)
+              removeRecentFiles(files)
+              removeStarredFiles(files)
+              for (const file of files) projectFileRenamed(file, rebasePath(file, path, parked))
+            },
+            rollback: () => renameSync(parked, path),
+          }
+        },
+      })
+      for (const parked of displaced) {
+        try {
+          await shell.trashItem(parked)
+        } catch {
+          rmSync(parked, { recursive: true, force: true })
+        }
+      }
+      for (const { from, to } of result.moved) {
+        const files = dirFiles.get(from)
+        if (files) afterFolderMoved(from, to, files)
+        else afterFileMoved(from, to)
+      }
+      return result
+    },
+  )
+
+  ipcMain.handle(HOME_CHANNELS.deleteFolder, async (_event, dir: unknown) => {
+    if (!insideRoot(dir) || isRoot(dir)) return
+    const files = trackedFilesUnder(dir)
+    try {
+      await shell.trashItem(dir)
+    } catch {
+      return
+    }
+    removeRecentFiles(files)
+    removeStarredFiles(files)
+  })
+
   ipcMain.handle(HOME_CHANNELS.getDefaultSaveDir, (): string => defaultSaveDir())
+
+  const defaultApp = createDefaultAppService({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    exePath: app.getPath('exe'),
+    run: execFileRunner,
+    openExternal: (url) => shell.openExternal(url),
+  })
+  ipcMain.handle(HOME_CHANNELS.getDefaultAppStatus, () => defaultApp.status())
+  ipcMain.handle(HOME_CHANNELS.setDefaultApp, () => defaultApp.set())
 
   ipcMain.handle(HOME_CHANNELS.pickDefaultSaveDir, async (): Promise<string | null> => {
     const result = await showOpenDialogWithMemory(dialog, shellWindow, {
@@ -3108,6 +4347,7 @@ function registerHomeIpc(): void {
       return null
     }
     writeAppSetting(APP_SETTINGS_PATH(), DEFAULT_SAVE_DIR_KEY, picked)
+    ensureFolderWatchers()
     return picked
   })
 
@@ -3198,6 +4438,7 @@ interface MenuIconSet {
   pptx: NativeImage
   pdf: NativeImage
   md: NativeImage
+  html: NativeImage
   home: NativeImage
 }
 let menuIconCache: MenuIconSet | null = null
@@ -3208,6 +4449,7 @@ function menuIcons(): MenuIconSet {
     pptx: loadMenuIcon(menuPptxIcon1x, menuPptxIcon2x),
     pdf: loadMenuIcon(menuPdfIcon1x, menuPdfIcon2x),
     md: loadMenuIcon(menuMdIcon1x, menuMdIcon2x),
+    html: loadMenuIcon(menuHtmlIcon1x, menuHtmlIcon2x),
     home: loadMenuIcon(menuHomeIcon1x, menuHomeIcon2x),
   }
   return menuIconCache
@@ -3220,6 +4462,7 @@ const TAB_MENU_ICON: Record<TabKind, keyof MenuIconSet> = {
   slides: 'pptx',
   pdf: 'pdf',
   markdown: 'md',
+  html: 'html',
 }
 
 // tab views see neither DOM events nor a focus change when the user clicks the
@@ -3235,16 +4478,98 @@ function broadcastChromePressed(exclude?: WebContents): void {
   }
 }
 
+/** the shell's tab manager, recreating the shell window when a detached editor outlived it */
+function ensureTabManager(): TabManager {
+  if (!tabManager) createShellWindow()
+  if (!tabManager) throw new Error('the shell window could not be created')
+  return tabManager
+}
+
+/** "Open in New Window": reparent the tab's live view into a detached editor
+ *  window — the document moves as-is, unsaved edits included. */
+function detachTabToWindow(id: string): void {
+  if (!tabManager) return
+  const record = tabManager.detachTab(id)
+  if (!record) return
+  const win = createDetachedEditorWindow({ ...record, applyMenuFor })
+  win.focus()
+}
+
+/** Tear-off: the tab leaves the strip for a window created under the held
+ *  pointer at (x, y); the strip keeps steering it until release. */
+function tearOffTabToWindow(id: string, x: number, y: number): boolean {
+  if (!tabManager || isTearingOff() || !tabManager.canDetachTab(id)) return false
+  const record = tabManager.detachTab(id)
+  if (!record) return false
+  createDetachedEditorWindow({ ...record, applyMenuFor, tearOffAt: { x, y } })
+  return true
+}
+
+/** insertion slot the shell strip reported for the current dock preview */
+let lastDockIndex: number | undefined
+
+/** Menu-command target for the editors whose menus resolve through the shell
+ *  (pdf / markdown / html): the focused detached window of that kind first,
+ *  else the shell's active tab of that kind. */
+function activeEditorTarget(
+  kind: TabKind,
+  fromTabs: () => { id: string; webContents: WebContents; filePath?: string } | undefined,
+): { id: string; webContents: WebContents; filePath?: string } | undefined {
+  const detachedTab = focusedDetachedTab()
+  if (detachedTab?.kind === kind) return detachedTab
+  return fromTabs()
+}
+function activePdfTarget() {
+  return activeEditorTarget('pdf', () => tabManager?.activePdfTab())
+}
+
+/** ⌘W / File > Close targets the focused window: a detached editor closes
+ *  itself (its own unsaved-changes guard runs), otherwise the shell's active tab
+ *  — the same rule the docs / sheets / slides close hooks follow */
+function closeFocusedEditor(): void {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && focused !== shellWindow && isDetachedEditorWindow(focused)) focused.close()
+  else tabManager?.closeActiveTab()
+}
+
+/** the window a pdf command's dialogs and progress belong to: the detached
+ *  editor hosting the tab when there is one, else the shell */
+function pdfHostWindow(tab: { webContents: WebContents } | undefined): BrowserWindow | null {
+  if (!tab) return null
+  return detachedWindowForWebContents(tab.webContents.id) ?? shellWindow
+}
+function activeMarkdownTarget() {
+  return activeEditorTarget('markdown', () => tabManager?.activeMarkdownTab())
+}
+function activeHtmlTarget() {
+  return activeEditorTarget('html', () => tabManager?.activeHtmlTab())
+}
+
 function registerTabsIpc(): void {
   ipcMain.on(TABS_CHANNELS.chromePressed, (event) => broadcastChromePressed(event.sender))
   ipcMain.handle(TABS_CHANNELS.list, () => tabManager?.list() ?? [])
-  ipcMain.handle(TABS_CHANNELS.activate, (_event, id: string) => tabManager?.activateTab(id))
-  ipcMain.handle(TABS_CHANNELS.close, (_event, id: string) => tabManager?.closeTab(id))
+  ipcMain.handle(TABS_CHANNELS.activate, (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return
+    tabManager?.activateTab(id)
+  })
+  ipcMain.handle(TABS_CHANNELS.close, (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return
+    return tabManager?.closeTab(id)
+  })
   ipcMain.handle(TABS_CHANNELS.reorder, (_event, id: string, toIndex: number) => {
     if (typeof id === 'string' && Number.isInteger(toIndex)) tabManager?.reorderTab(id, toIndex)
   })
   // "all tabs" overflow menu — native popup because the editors' WebContentsView
   // would cover any DOM dropdown the shell renderer draws below the tab strip
+  ipcMain.handle(TABS_CHANNELS.showAppMenu, (_event, x: unknown, y: unknown) => {
+    if (!shellWindow) return
+    Menu.getApplicationMenu()?.popup({
+      window: shellWindow,
+      ...(typeof x === 'number' && typeof y === 'number'
+        ? { x: Math.round(x), y: Math.round(y) }
+        : {}),
+    })
+  })
   ipcMain.handle(TABS_CHANNELS.showMenu, (_event, x: unknown, y: unknown) => {
     if (!tabManager || !shellWindow) return
     const menu = Menu.buildFromTemplate(
@@ -3257,6 +4582,56 @@ function registerTabsIpc(): void {
       })),
     )
     menu.popup({
+      window: shellWindow,
+      ...(typeof x === 'number' && typeof y === 'number'
+        ? { x: Math.round(x), y: Math.round(y) }
+        : {}),
+    })
+  })
+  ipcMain.handle(TABS_CHANNELS.detach, (_event, id: unknown) => {
+    if (typeof id !== 'string' || !tabManager?.canDetachTab(id)) return
+    detachTabToWindow(id)
+  })
+  // drag-to-tear-off: the strip drives the window until the pointer lifts
+  ipcMain.handle(TABS_CHANNELS.tearOff, (_event, id: unknown, x: unknown, y: unknown) => {
+    if (typeof id !== 'string' || typeof x !== 'number' || typeof y !== 'number') return false
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+    return tearOffTabToWindow(id, x, y)
+  })
+  ipcMain.on(TABS_CHANNELS.dragTornWindow, (_event, x: unknown, y: unknown) => {
+    if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y))
+      dragTornWindow(x, y)
+  })
+  ipcMain.handle(TABS_CHANNELS.dockTornWindow, (_event, index: unknown) => {
+    const tab = takeTornTab()
+    if (!tab) return
+    ensureTabManager().attachTab(tab, typeof index === 'number' ? index : undefined)
+  })
+  ipcMain.handle(TABS_CHANNELS.endTornDrag, () => endTornDrag())
+  ipcMain.on(TABS_CHANNELS.dockIndex, (_event, index: unknown) => {
+    lastDockIndex = typeof index === 'number' && Number.isInteger(index) ? index : undefined
+  })
+  // per-tab context menu — native for the same reason as the tab list above
+  ipcMain.handle(TABS_CHANNELS.showTabMenu, (_event, id: unknown, x: unknown, y: unknown) => {
+    if (!tabManager || !shellWindow || typeof id !== 'string') return
+    const tab = tabManager.list().find((t) => t.id === id)
+    if (!tab || tab.kind === 'home') return
+    const template: MenuItemConstructorOptions[] = []
+    // every document tab except a chrome-free Present tab (a live preview of
+    // another tab's document — it has nothing of its own to move)
+    if (tabManager.canDetachTab(id)) {
+      template.push({
+        label: tm('menuOpenInNewWindow'),
+        click: () => detachTabToWindow(id),
+      })
+      template.push({ type: 'separator' })
+    }
+    template.push({
+      label: tm('menuClose'),
+      enabled: tab.closable,
+      click: () => void tabManager?.closeTab(id),
+    })
+    Menu.buildFromTemplate(template).popup({
       window: shellWindow,
       ...(typeof x === 'number' && typeof y === 'number'
         ? { x: Math.round(x), y: Math.round(y) }
@@ -3289,6 +4664,11 @@ function registerTabsIpc(): void {
         label: tm('menuNewMarkdown'),
         icon: menuIcons().md,
         click: () => newMarkdownTab(),
+      },
+      {
+        label: tm('menuNewHtml'),
+        icon: menuIcons().html,
+        click: () => newHtmlTab(),
       },
       {
         label: tm('menuNewPdf'),
@@ -3338,6 +4718,7 @@ function buildHomeMenu(): void {
         },
         { label: tm('menuNewSlide'), click: () => newSlideTab() },
         { label: tm('menuNewMarkdown'), click: () => newMarkdownTab() },
+        { label: tm('menuNewHtml'), click: () => newHtmlTab() },
         { label: tm('menuNewPdf'), click: () => void newPdfTab() },
         { type: 'separator' },
         {
@@ -3354,7 +4735,12 @@ function buildHomeMenu(): void {
     {
       role: 'help',
       label: tm('menuHelp'),
-      submenu: [{ label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() }],
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -3385,7 +4771,7 @@ function buildPdfMenu(): void {
           label: tm('menuSave'),
           accelerator: 'CmdOrCtrl+S',
           click: () => {
-            const tab = tabManager?.activePdfTab()
+            const tab = activePdfTarget()
             if (tab) void flushPdfSave(tab.webContents)
           },
         },
@@ -3395,15 +4781,10 @@ function buildPdfMenu(): void {
           click: () => void savePdfAs(),
         },
         { type: 'separator' },
-        // local pdf2docx is the default Word export; cloud stays as a
-        // secondary option because scanned PDFs still need its OCR
+        // local pdf2docx (P4): in-process PDFium wasm, no cloud counterpart
         {
           label: tm('menuExportDocx'),
           click: () => void exportPdfAsDocxLocal(),
-        },
-        {
-          label: tm('menuExportDocxCloud'),
-          click: () => void exportPdfAsDocx(),
         },
         // local pdf2pptx (P25): one slide per page, no cloud counterpart
         {
@@ -3420,7 +4801,7 @@ function buildPdfMenu(): void {
           label: tm('menuPrint'),
           accelerator: 'CmdOrCtrl+P',
           click: () => {
-            const tab = tabManager?.activePdfTab()
+            const tab = activePdfTarget()
             if (tab) sendPdfPrintRequest(tab.webContents)
           },
         },
@@ -3428,7 +4809,7 @@ function buildPdfMenu(): void {
         {
           label: tm('menuClose'),
           accelerator: 'CmdOrCtrl+W',
-          click: () => tabManager?.closeActiveTab(),
+          click: () => closeFocusedEditor(),
         },
       ],
     },
@@ -3437,7 +4818,12 @@ function buildPdfMenu(): void {
     {
       role: 'help',
       label: tm('menuHelp'),
-      submenu: [{ label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() }],
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -3468,7 +4854,7 @@ function buildMarkdownMenu(): void {
           label: tm('menuSave'),
           accelerator: 'CmdOrCtrl+S',
           click: () => {
-            const tab = tabManager?.activeMarkdownTab()
+            const tab = activeMarkdownTarget()
             if (tab) void requestMarkdownSave(tab.webContents, 'save')
           },
         },
@@ -3476,7 +4862,7 @@ function buildMarkdownMenu(): void {
           label: tm('menuSaveAs'),
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => {
-            const tab = tabManager?.activeMarkdownTab()
+            const tab = activeMarkdownTarget()
             if (tab) void requestMarkdownSave(tab.webContents, 'saveAs')
           },
         },
@@ -3484,21 +4870,28 @@ function buildMarkdownMenu(): void {
         {
           label: tm('menuExportDocx'),
           click: () => {
-            const tab = tabManager?.activeMarkdownTab()
+            const tab = activeMarkdownTarget()
             if (tab) sendMarkdownExportRequest(tab.webContents, 'docx')
           },
         },
         {
           label: tm('menuExportPdf'),
           click: () => {
-            const tab = tabManager?.activeMarkdownTab()
+            const tab = activeMarkdownTarget()
             if (tab) sendMarkdownExportRequest(tab.webContents, 'pdf')
+          },
+        },
+        {
+          label: tm('menuExportImages'),
+          click: () => {
+            const tab = activeMarkdownTarget()
+            if (tab) sendMarkdownExportRequest(tab.webContents, 'png')
           },
         },
         {
           label: tm('menuOpenInDocs'),
           click: () => {
-            const tab = tabManager?.activeMarkdownTab()
+            const tab = activeMarkdownTarget()
             if (tab) sendMarkdownExportRequest(tab.webContents, 'docs')
           },
         },
@@ -3507,7 +4900,7 @@ function buildMarkdownMenu(): void {
           label: tm('menuPrint'),
           accelerator: 'CmdOrCtrl+P',
           click: () => {
-            const tab = tabManager?.activeMarkdownTab()
+            const tab = activeMarkdownTarget()
             if (tab) sendMarkdownPrintRequest(tab.webContents)
           },
         },
@@ -3515,7 +4908,7 @@ function buildMarkdownMenu(): void {
         {
           label: tm('menuClose'),
           accelerator: 'CmdOrCtrl+W',
-          click: () => tabManager?.closeActiveTab(),
+          click: () => closeFocusedEditor(),
         },
       ],
     },
@@ -3524,7 +4917,104 @@ function buildMarkdownMenu(): void {
     {
       role: 'help',
       label: tm('menuHelp'),
-      submenu: [{ label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() }],
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
+    },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+// ---- html menu (html-main has no menu of its own; the shell owns html tabs) ----
+
+function buildHtmlMenu(): void {
+  const isMac = process.platform === 'darwin'
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    {
+      label: tm('menuFile'),
+      submenu: [
+        {
+          label: tm('menuOpen'),
+          accelerator: 'CmdOrCtrl+O',
+          click: () => void openFileViaDialog(),
+        },
+        { type: 'separator' },
+        {
+          label: tm('backToHome'),
+          accelerator: 'Shift+CmdOrCtrl+H',
+          click: () => tabManager?.openHomeTab(),
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuSave'),
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            const tab = activeHtmlTarget()
+            if (tab) void requestHtmlSave(tab.webContents, 'save')
+          },
+        },
+        {
+          label: tm('menuSaveAs'),
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => {
+            const tab = activeHtmlTarget()
+            if (tab) void requestHtmlSave(tab.webContents, 'saveAs')
+          },
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuExportDocx'),
+          click: () => {
+            const tab = activeHtmlTarget()
+            if (tab) sendHtmlExportRequest(tab.webContents, 'docx')
+          },
+        },
+        {
+          label: tm('menuExportPdf'),
+          click: () => {
+            const tab = activeHtmlTarget()
+            if (tab) sendHtmlExportRequest(tab.webContents, 'pdf')
+          },
+        },
+        {
+          label: tm('menuExportHtml'),
+          click: () => {
+            const tab = activeHtmlTarget()
+            if (tab) sendHtmlExportRequest(tab.webContents, 'html')
+          },
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuPrint'),
+          accelerator: 'CmdOrCtrl+P',
+          click: () => {
+            const tab = activeHtmlTarget()
+            if (tab) sendHtmlPrintRequest(tab.webContents)
+          },
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuClose'),
+          accelerator: 'CmdOrCtrl+W',
+          click: () => closeFocusedEditor(),
+        },
+      ],
+    },
+    editMenuTemplate(process.platform, appMenuLabels(currentLang())),
+    windowMenuTemplate(process.platform, appMenuLabels(currentLang())),
+    {
+      role: 'help',
+      label: tm('menuHelp'),
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -3535,33 +5025,38 @@ function buildMarkdownMenu(): void {
  * Non-destructive: the original file is never written, and a cancelled dialog changes
  * nothing on disk (dialog first, no flush into the source).
  */
-/** In-flight guard (same pattern as exportPdfAsDocx): a re-trigger while the dialog
+/** In-flight guard (same pattern as exportPdfAsDocxLocal): a re-trigger while the dialog
     or write is active must not start a second flow that overwrites the first one's
     waiter/target grant or clears its autosave pause early */
 let savingPdfAs = false
 
 async function savePdfAs(): Promise<void> {
-  const tab = tabManager?.activePdfTab()
-  if (!tab?.filePath || !shellWindow || savingPdfAs) return
+  const tab = activePdfTarget()
+  const host = pdfHostWindow(tab)
+  if (!tab?.filePath || !host || savingPdfAs) return
   savingPdfAs = true
   // Pause renderer autosave for the whole flow: the dialog blurs the window, and a
   // blur-triggered autosave would write the pending edits into the original file
   setPdfSaveAsInFlight(tab.webContents, true)
   try {
-    const picked = await showSaveDialogWithMemory(dialog, shellWindow, {
+    const picked = await showSaveDialogWithMemory(dialog, host, {
       defaultPath: tab.filePath,
       filters: [{ name: tm('filterPdf'), extensions: ['pdf'] }],
     })
-    if (picked.canceled || !picked.filePath || picked.filePath === tab.filePath) return
+    const target = pdfSaveAsTarget(picked, tab.filePath)
+    if (!target) return
     if (pdfIsDirty(tab.webContents.id)) {
       // Renderer applies its pending edits onto the source bytes; the pdf main
       // process writes the result to the picked path only
-      if (!(await requestPdfSaveAs(tab.webContents, picked.filePath))) return
+      if (!(await requestPdfSaveAs(tab.webContents, target))) return
     } else {
       // No pending edits → a byte-identical copy
-      copyFileSync(tab.filePath, picked.filePath)
+      await atomicCopyFile(tab.filePath, target)
     }
-    openDocumentPath(picked.filePath)
+    openDocumentPath(target)
+  } catch (err) {
+    console.error('[shell] pdf save as failed:', err)
+    showErrorDialog(host, tm('errPdfSaveAsFailed'), err)
   } finally {
     savingPdfAs = false
     setPdfSaveAsInFlight(tab.webContents, false)
@@ -3569,25 +5064,22 @@ async function savePdfAs(): Promise<void> {
 }
 
 /**
- * In-flight guard: covers the whole flow (dialogs included, conversion takes
- * ~10s+) so re-triggering from the menu can never start a second paid conversion
+ * In-flight guard: covers the whole flow (dialogs included) so re-triggering
+ * from the menu can never start a second conversion
  */
 let exportingPdfDocx = false
 
 /**
- * Export as Word for pdf tabs: flush pending edits, confirm the 5-credit cost,
- * pick the destination, then upload + cloud-convert via gsk file_convert. Not
- * logged in → offer browser login and let the user re-trigger the export
- * afterwards. The destination is picked before converting so cancelling the
- * save dialog never wastes a paid conversion.
+ * Export as Word for pdf tabs, fully local (pdf2docx P4): flush pending
+ * edits, pick the destination, convert in-process via PDFium wasm, write the
+ * file and open it in a Docs tab. No login, no credits.
  */
-async function exportPdfAsDocx(): Promise<void> {
-  const tab = tabManager?.activePdfTab()
-  if (!tab?.filePath || !shellWindow) return
+async function exportPdfAsDocxLocal(): Promise<void> {
+  const tab = activePdfTarget()
+  const host = pdfHostWindow(tab)
+  if (!tab?.filePath || !host) return
   if (exportingPdfDocx) {
-    // Re-triggered while a previous export (dialogs or cloud conversion) is
-    // still in flight: tell the user instead of silently ignoring the click.
-    void dialog.showMessageBox(shellWindow, {
+    void dialog.showMessageBox(host, {
       type: 'info',
       message: tm('pdfDocxBusyMsg'),
     })
@@ -3596,45 +5088,7 @@ async function exportPdfAsDocx(): Promise<void> {
   exportingPdfDocx = true
   try {
     if (!(await flushPdfSave(tab.webContents))) return
-    if (!hasGskAuth()) {
-      // hasGskAuth() is also false when the gsk CLI itself cannot be resolved
-      // (broken install); Sign In could not launch in that case, so surface
-      // the real problem instead of a login dialog that cannot succeed.
-      if (!resolveGskEntry()) {
-        void dialog.showMessageBox(shellWindow, {
-          type: 'error',
-          message: tm('pdfDocxNoCliMsg'),
-        })
-        return
-      }
-      const { response } = await dialog.showMessageBox(shellWindow, {
-        type: 'info',
-        message: tm('pdfDocxLoginMsg'),
-        detail: tm('pdfDocxLoginDetail'),
-        buttons: [tm('pdfDocxBtnLogin'), tm('btnCancel')],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      })
-      if (response === 0) ensureGenofficeLogin((url) => void shell.openExternal(url))
-      return
-    }
-    const balance = (await gskLoginInfo())?.creditBalance
-    const balanceLine =
-      balance === undefined
-        ? ''
-        : ` ${tm('pdfDocxConfirmBalance', { balance: Math.floor(balance).toLocaleString('en-US') })}`
-    const confirm = await dialog.showMessageBox(shellWindow, {
-      type: 'question',
-      message: tm('pdfDocxConfirmMsg'),
-      detail: `${tm('pdfDocxConfirmDetail')}${balanceLine}`,
-      buttons: [tm('pdfDocxBtnConvert'), tm('btnCancel')],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    })
-    if (confirm.response !== 0) return
-    const picked = await showSaveDialogWithMemory(dialog, shellWindow, {
+    const picked = await showSaveDialogWithMemory(dialog, host, {
       defaultPath: tab.filePath.replace(/\.pdf$/i, '.docx'),
       filters: [{ name: tm('filterWord'), extensions: ['docx'] }],
     })
@@ -3642,73 +5096,20 @@ async function exportPdfAsDocx(): Promise<void> {
     // If the destination is already open in a docs tab, close it first (its
     // normal unsaved-changes guard applies) so the converted file opens fresh
     // instead of leaving a stale tab whose next save would clobber the result.
-    // Cancelling the close aborts the export before any credits are spent.
-    const staleTabId = tabManager?.findDocsTabByPath(picked.filePath)
-    if (staleTabId) {
-      await tabManager?.closeTab(staleTabId)
-      // closeTab activates the docs tab for its unsaved-changes prompt (and a
-      // fallback tab after a successful close), so bring the pdf tab back
-      // either way — especially when the user cancels and the export aborts.
-      tabManager?.activateTab(tab.id)
-      if (tabManager?.findDocsTabByPath(picked.filePath)) return
-    }
-    shellWindow.setProgressBar(2)
-    const bytes = await gskConvertPdfToDocx(tab.filePath)
-    writeFileSync(picked.filePath, bytes)
-    openDocumentPath(picked.filePath)
-  } catch (err) {
-    if (shellWindow && !shellWindow.isDestroyed()) {
-      void dialog.showMessageBox(shellWindow, {
-        type: 'error',
-        message: tm('pdfDocxFailedMsg'),
-        detail: err instanceof Error ? err.message : String(err),
-      })
-    }
-  } finally {
-    exportingPdfDocx = false
-    if (shellWindow && !shellWindow.isDestroyed()) shellWindow.setProgressBar(-1)
-  }
-}
-
-/**
- * Export as Word for pdf tabs, fully local (pdf2docx P4): flush pending
- * edits, pick the destination, convert in-process via PDFium wasm, write the
- * file and open it in a Docs tab. No login, no credits. Shares the in-flight
- * guard with the cloud export so the two can never run concurrently.
- */
-async function exportPdfAsDocxLocal(): Promise<void> {
-  const tab = tabManager?.activePdfTab()
-  if (!tab?.filePath || !shellWindow) return
-  if (exportingPdfDocx) {
-    void dialog.showMessageBox(shellWindow, {
-      type: 'info',
-      message: tm('pdfDocxBusyMsg'),
-    })
-    return
-  }
-  exportingPdfDocx = true
-  try {
-    if (!(await flushPdfSave(tab.webContents))) return
-    const picked = await showSaveDialogWithMemory(dialog, shellWindow, {
-      defaultPath: tab.filePath.replace(/\.pdf$/i, '.docx'),
-      filters: [{ name: tm('filterWord'), extensions: ['docx'] }],
-    })
-    if (picked.canceled || !picked.filePath) return
-    // same stale-tab handling as the cloud export (see exportPdfAsDocx)
     const staleTabId = tabManager?.findDocsTabByPath(picked.filePath)
     if (staleTabId) {
       await tabManager?.closeTab(staleTabId)
       tabManager?.activateTab(tab.id)
       if (tabManager?.findDocsTabByPath(picked.filePath)) return
     }
-    shellWindow.setProgressBar(2)
+    host.setProgressBar(2)
     // encrypted PDFs prompt for the password (P23), looping on wrong entries;
     // null result = user cancelled the prompt → abort silently
     const pdfPath = tab.filePath
     const result = await convertPdfFileToDocxLocalWithPrompt(
       pdfPath,
       (retry) =>
-        promptPdfPassword(shellWindow, {
+        promptPdfPassword(host, {
           fileName: basename(pdfPath),
           retry,
           busy: false,
@@ -3727,16 +5128,16 @@ async function exportPdfAsDocxLocal(): Promise<void> {
           },
         }),
       (page, total) => {
-        if (shellWindow && !shellWindow.isDestroyed() && total > 0) {
-          shellWindow.setProgressBar(page / total)
+        if (host && !host.isDestroyed() && total > 0) {
+          host.setProgressBar(page / total)
         }
       },
     )
     if (result === null) return
-    writeFileSync(picked.filePath, result.docx)
+    await atomicWriteFile(picked.filePath, result.docx)
 
-    // degrade transparency (plan §7.6 dual-track split): whole scan → point
-    // to the cloud/OCR flow; individual image-fallback pages → name them;
+    // degrade transparency (plan §7.6 dual-track split): whole scan → say so
+    // once; individual image-fallback pages → name them;
     // OCR-recovered scans ('ocr') are SUCCESSES — announce the recovery (the
     // user should proofread machine-read text), never the image-export notice
     const ocrPages = result.pageResults.filter((r) => r.status === 'ocr').map((r) => r.page)
@@ -3744,7 +5145,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
       .filter((r) => r.status !== 'ok' && r.status !== 'ocr')
       .map((r) => r.page)
     if (result.scannedDocument) {
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalScannedMsg'),
         detail: tm('pdfDocxLocalScannedDetail'),
@@ -3752,7 +5153,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
     } else if (imagePages.length > 0 && ocrPages.length > 0) {
       // mixed documents surface BOTH facts in one dialog: which pages shipped
       // as images and which carry machine-read text the user should proofread
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalDegradedMsg'),
         detail:
@@ -3761,13 +5162,13 @@ async function exportPdfAsDocxLocal(): Promise<void> {
           tm('pdfDocxLocalOcrDetail', { pages: ocrPages.join(', ') }),
       })
     } else if (imagePages.length > 0) {
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalDegradedMsg'),
         detail: tm('pdfDocxLocalDegradedDetail', { pages: imagePages.join(', ') }),
       })
     } else if (ocrPages.length > 0) {
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalOcrMsg'),
         detail: tm('pdfDocxLocalOcrDetail', { pages: ocrPages.join(', ') }),
@@ -3775,7 +5176,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
     }
     openDocumentPath(picked.filePath)
   } catch (err) {
-    if (shellWindow && !shellWindow.isDestroyed()) {
+    if (host && !host.isDestroyed()) {
       // structured load failures (P22): password-protected / damaged PDFs get
       // a human-readable explanation instead of the raw PDFium error string
       const detail =
@@ -3791,7 +5192,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
           : err instanceof Error
             ? err.message
             : String(err)
-      void dialog.showMessageBox(shellWindow, {
+      void dialog.showMessageBox(host, {
         type: 'error',
         message: tm('pdfDocxFailedMsg'),
         detail,
@@ -3802,7 +5203,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
     // or a non-password error thrown mid-retry
     closePdfPasswordDialog()
     exportingPdfDocx = false
-    if (shellWindow && !shellWindow.isDestroyed()) shellWindow.setProgressBar(-1)
+    if (host && !host.isDestroyed()) host.setProgressBar(-1)
   }
 }
 
@@ -3814,10 +5215,11 @@ async function exportPdfAsDocxLocal(): Promise<void> {
  * conversions at once.
  */
 async function exportPdfAsPptxLocal(): Promise<void> {
-  const tab = tabManager?.activePdfTab()
-  if (!tab?.filePath || !shellWindow) return
+  const tab = activePdfTarget()
+  const host = pdfHostWindow(tab)
+  if (!tab?.filePath || !host) return
   if (exportingPdfDocx) {
-    void dialog.showMessageBox(shellWindow, {
+    void dialog.showMessageBox(host, {
       type: 'info',
       message: tm('pdfPptxBusyMsg'),
     })
@@ -3826,12 +5228,12 @@ async function exportPdfAsPptxLocal(): Promise<void> {
   exportingPdfDocx = true
   try {
     if (!(await flushPdfSave(tab.webContents))) return
-    const picked = await showSaveDialogWithMemory(dialog, shellWindow, {
+    const picked = await showSaveDialogWithMemory(dialog, host, {
       defaultPath: tab.filePath.replace(/\.pdf$/i, '.pptx'),
       filters: [{ name: tm('filterPpt'), extensions: ['pptx'] }],
     })
     if (picked.canceled || !picked.filePath) return
-    // same stale-tab handling as the Word exports (see exportPdfAsDocx),
+    // same stale-tab handling as the Word export (see exportPdfAsDocxLocal),
     // against the slides tab that may already show the destination file
     const staleTabId = tabManager?.findSlidesTabByPath(picked.filePath)
     if (staleTabId) {
@@ -3839,14 +5241,14 @@ async function exportPdfAsPptxLocal(): Promise<void> {
       tabManager?.activateTab(tab.id)
       if (tabManager?.findSlidesTabByPath(picked.filePath)) return
     }
-    shellWindow.setProgressBar(2)
+    host.setProgressBar(2)
     // encrypted PDFs prompt for the password (P23), looping on wrong entries;
     // null result = user cancelled the prompt → abort silently
     const pdfPath = tab.filePath
     const result = await convertPdfFileToPptxLocalWithPrompt(
       pdfPath,
       (retry) =>
-        promptPdfPassword(shellWindow, {
+        promptPdfPassword(host, {
           fileName: basename(pdfPath),
           retry,
           busy: false,
@@ -3865,25 +5267,25 @@ async function exportPdfAsPptxLocal(): Promise<void> {
           },
         }),
       (page, total) => {
-        if (shellWindow && !shellWindow.isDestroyed() && total > 0) {
-          shellWindow.setProgressBar(page / total)
+        if (host && !host.isDestroyed() && total > 0) {
+          host.setProgressBar(page / total)
         }
       },
     )
     if (result === null) return
-    writeFileSync(picked.filePath, result.pptx)
+    await atomicWriteFile(picked.filePath, result.pptx)
 
     // degrade transparency (same split as the Word export): whole scan vs
     // individual image-fallback pages
     const imagePages = result.pageResults.filter((r) => r.status !== 'ok').map((r) => r.page)
     if (result.scannedDocument) {
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalScannedMsg'),
         detail: tm('pdfPptxLocalScannedDetail'),
       })
     } else if (imagePages.length > 0) {
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalDegradedMsg'),
         detail: tm('pdfDocxLocalDegradedDetail', { pages: imagePages.join(', ') }),
@@ -3891,7 +5293,7 @@ async function exportPdfAsPptxLocal(): Promise<void> {
     }
     openDocumentPath(picked.filePath)
   } catch (err) {
-    if (shellWindow && !shellWindow.isDestroyed()) {
+    if (host && !host.isDestroyed()) {
       // structured load failures (P22): same explanations as the Word export
       const detail =
         err instanceof PdfLoadError
@@ -3903,7 +5305,7 @@ async function exportPdfAsPptxLocal(): Promise<void> {
           : err instanceof Error
             ? err.message
             : String(err)
-      void dialog.showMessageBox(shellWindow, {
+      void dialog.showMessageBox(host, {
         type: 'error',
         message: tm('pdfPptxFailedMsg'),
         detail,
@@ -3912,7 +5314,7 @@ async function exportPdfAsPptxLocal(): Promise<void> {
   } finally {
     closePdfPasswordDialog()
     exportingPdfDocx = false
-    if (shellWindow && !shellWindow.isDestroyed()) shellWindow.setProgressBar(-1)
+    if (host && !host.isDestroyed()) host.setProgressBar(-1)
   }
 }
 
@@ -3924,10 +5326,11 @@ async function exportPdfAsPptxLocal(): Promise<void> {
  * conversions at once.
  */
 async function exportPdfAsXlsxLocal(): Promise<void> {
-  const tab = tabManager?.activePdfTab()
-  if (!tab?.filePath || !shellWindow) return
+  const tab = activePdfTarget()
+  const host = pdfHostWindow(tab)
+  if (!tab?.filePath || !host) return
   if (exportingPdfDocx) {
-    void dialog.showMessageBox(shellWindow, {
+    void dialog.showMessageBox(host, {
       type: 'info',
       message: tm('pdfXlsxBusyMsg'),
     })
@@ -3936,12 +5339,12 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
   exportingPdfDocx = true
   try {
     if (!(await flushPdfSave(tab.webContents))) return
-    const picked = await showSaveDialogWithMemory(dialog, shellWindow, {
+    const picked = await showSaveDialogWithMemory(dialog, host, {
       defaultPath: tab.filePath.replace(/\.pdf$/i, '.xlsx'),
       filters: [{ name: tm('filterExcel'), extensions: ['xlsx'] }],
     })
     if (picked.canceled || !picked.filePath) return
-    // same stale-tab handling as the Word exports (see exportPdfAsDocx),
+    // same stale-tab handling as the Word export (see exportPdfAsDocxLocal),
     // against the sheets tab that may already show the destination file
     const staleTabId = tabManager?.findSheetsTabByPath(picked.filePath)
     if (staleTabId) {
@@ -3949,14 +5352,14 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
       tabManager?.activateTab(tab.id)
       if (tabManager?.findSheetsTabByPath(picked.filePath)) return
     }
-    shellWindow.setProgressBar(2)
+    host.setProgressBar(2)
     // encrypted PDFs prompt for the password (P23), looping on wrong entries;
     // null result = user cancelled the prompt → abort silently
     const pdfPath = tab.filePath
     const result = await convertPdfFileToXlsxLocalWithPrompt(
       pdfPath,
       (retry) =>
-        promptPdfPassword(shellWindow, {
+        promptPdfPassword(host, {
           fileName: basename(pdfPath),
           retry,
           busy: false,
@@ -3975,25 +5378,25 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
           },
         }),
       (page, total) => {
-        if (shellWindow && !shellWindow.isDestroyed() && total > 0) {
-          shellWindow.setProgressBar(page / total)
+        if (host && !host.isDestroyed() && total > 0) {
+          host.setProgressBar(page / total)
         }
       },
     )
     if (result === null) return
-    writeFileSync(picked.filePath, result.xlsx)
+    await atomicWriteFile(picked.filePath, result.xlsx)
 
     // degrade transparency: pages that could not become cells got a notice
     // row on their worksheet instead of an image (a spreadsheet has none)
     const noticePages = result.pageResults.filter((r) => r.status !== 'ok').map((r) => r.page)
     if (result.scannedDocument) {
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalScannedMsg'),
         detail: tm('pdfXlsxLocalScannedDetail'),
       })
     } else if (noticePages.length > 0) {
-      await dialog.showMessageBox(shellWindow, {
+      await dialog.showMessageBox(host, {
         type: 'info',
         message: tm('pdfXlsxLocalSkippedMsg'),
         detail: tm('pdfXlsxLocalSkippedDetail', { pages: noticePages.join(', ') }),
@@ -4001,7 +5404,7 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
     }
     openDocumentPath(picked.filePath)
   } catch (err) {
-    if (shellWindow && !shellWindow.isDestroyed()) {
+    if (host && !host.isDestroyed()) {
       // structured load failures (P22): same explanations as the Word export
       const detail =
         err instanceof PdfLoadError
@@ -4013,7 +5416,7 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
           : err instanceof Error
             ? err.message
             : String(err)
-      void dialog.showMessageBox(shellWindow, {
+      void dialog.showMessageBox(host, {
         type: 'error',
         message: tm('pdfXlsxFailedMsg'),
         detail,
@@ -4022,7 +5425,7 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
   } finally {
     closePdfPasswordDialog()
     exportingPdfDocx = false
-    if (shellWindow && !shellWindow.isDestroyed()) shellWindow.setProgressBar(-1)
+    if (host && !host.isDestroyed()) host.setProgressBar(-1)
   }
 }
 
@@ -4030,7 +5433,7 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
 // flows as the File menu items (dialogs, password prompt, in-flight guard included)
 ipcMain.handle(PDF_CHANNELS.convertOffice, async (e, format: unknown) => {
   // only the active pdf tab may trigger a conversion (its file is the source)
-  if (tabManager?.activePdfTab()?.webContents.id !== e.sender.id) return
+  if (activePdfTarget()?.webContents.id !== e.sender.id) return
   if (format === 'docx') await exportPdfAsDocxLocal()
   else if (format === 'xlsx') await exportPdfAsXlsxLocal()
   else if (format === 'pptx') await exportPdfAsPptxLocal()
@@ -4119,7 +5522,8 @@ async function installMainProcessProxy(): Promise<void> {
 
 // ---- lifecycle (the shell is the only owner) ----
 
-let pendingLaunchPath = supportedFileIn(process.argv) ?? unsupportedFileIn(process.argv)
+let pendingLaunchPaths = collectLaunchPaths(process.argv)
+let controlServer: ControlServer | null = null
 
 // show() does not un-minimize, and on macOS ⌘W destroys the shell window while the
 // app keeps running — either way a file opened from Finder would land out of sight.
@@ -4130,6 +5534,12 @@ function revealShellWindow(): void {
   shellWindow?.focus()
 }
 
+function openLaunchPaths(paths: readonly string[]): void {
+  let opened = false
+  for (const filePath of paths) opened = openDocumentPath(filePath) || opened
+  if (!opened) tabManager?.openHomeTab()
+}
+
 // On macOS a file opened from Finder is not in argv; it arrives via the open-file event (before ready).
 // If another instance already holds the lock, this process exits, and the path must ride along in
 // the lock request's additionalData to the surviving instance — so the lock request is deferred
@@ -4137,20 +5547,17 @@ function revealShellWindow(): void {
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!app.isReady()) {
-    pendingLaunchPath = filePath
+    if (!pendingLaunchPaths.includes(filePath)) pendingLaunchPaths.push(filePath)
     return
   }
   revealShellWindow()
-  if (!openDocumentPath(filePath)) tabManager?.openHomeTab()
+  openLaunchPaths([filePath])
 })
 
 app.on('second-instance', (_event, argv, _cwd, additionalData) => {
-  const file =
-    supportedFileIn(argv) ??
-    unsupportedFileIn(argv) ??
-    (additionalData as { launchPath?: string } | null)?.launchPath
+  const paths = collectLaunchPaths(argv, additionalData)
   revealShellWindow()
-  if (!file || !openDocumentPath(file)) tabManager?.openHomeTab()
+  openLaunchPaths(paths)
 })
 
 installNavigationGuard(app)
@@ -4159,6 +5566,19 @@ registerAiIpc()
 registerProjectIpc()
 registerDocsIpc()
 registerHomeIpc()
+registerIntegrationsIpc({
+  settingsPath: APP_SETTINGS_PATH,
+  window: () => shellWindow,
+  cliDir: app.isPackaged
+    ? join(process.resourcesPath, 'cli')
+    : join(APPS_ROOT, '..', 'packages', 'cli', 'bin'),
+  skillPath: app.isPackaged
+    ? join(process.resourcesPath, 'cli', 'skills', 'genoffice', 'SKILL.md')
+    : join(APPS_ROOT, '..', 'skills', 'genoffice', 'SKILL.md'),
+  cliPackageJson: app.isPackaged
+    ? join(process.resourcesPath, 'cli', 'package.json')
+    : join(APPS_ROOT, '..', 'packages', 'cli', 'package.json'),
+})
 registerTabsIpc()
 registerDroppedFilesIpc()
 
@@ -4168,8 +5588,64 @@ setSessionPathResolver(resolveSheetsSessionPath)
 /** Dev-only pid marker for the takeover below; scoped to userData like the lock itself. */
 const devPidFile = () => join(app.getPath('userData'), 'dev-instance.pid')
 
+/** Hidden-window exporters, one per editor module (HEADLESS_TARGETS says which formats each takes). */
+const headlessExporters: HeadlessExporters = {
+  docs: exportDocsHeadless,
+  sheets: (input, outPath) => exportSheetsPdfHeadless(input, outPath),
+  slides: (input, outPath) => exportSlidesPdfHeadless(input, outPath),
+  markdown: (input, outPath) => exportMarkdownPdfHeadless(input, outPath),
+  html: exportHtmlHeadless,
+}
+
+/**
+ * The whole `--headless-export` run: no shell window, no menus, no updater,
+ * no single-instance lock (a GUI instance may well be running). Prints
+ * exactly one line and exits with the genoffice convention (0/1/2/3).
+ */
+async function runHeadlessExportEntry(
+  parsed: Exclude<HeadlessArgvParse, { kind: 'none' }>,
+): Promise<void> {
+  const outcome =
+    parsed.kind === 'error'
+      ? ({ ok: false, code: HEADLESS_EXIT.badArgs, message: parsed.message } as const)
+      : await runHeadlessExport(parsed.request, headlessExporters)
+  const json = parsed.kind === 'error' ? parsed.json : parsed.request.json
+  stopSheetsSidecar()
+  for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.destroy()
+  // Writing to a pipe can finish asynchronously, and app.exit() would cut the
+  // envelope off mid-line; wait for the flush (but never longer than 2s).
+  const line = formatHeadlessEnvelope(outcome, json) + '\n'
+  await new Promise<void>((resolve) => {
+    const bail = setTimeout(resolve, 2000)
+    process.stdout.write(line, () => {
+      clearTimeout(bail)
+      resolve()
+    })
+  })
+  // app.quit() always exits 0; the genoffice envelope needs the real code, and
+  // every teardown this run owns has already happened.
+  app.exit(headlessExitCode(outcome))
+}
+
 app.whenReady().then(async () => {
-  const lockData = () => (pendingLaunchPath ? { launchPath: pendingLaunchPath } : {})
+  // first scan waits for the windows to come up; later ones follow folder changes
+  setTimeout(() => ensureFileIndexer()?.refresh(), 4000)
+  installRendererProtocol({
+    docs: join(DOCS_OUT, 'renderer'),
+    sheets: join(SHEETS_OUT, 'renderer'),
+    slides: join(SLIDES_OUT, 'renderer'),
+    pdf: join(PDF_OUT, 'renderer'),
+    markdown: join(MARKDOWN_OUT, 'renderer'),
+    html: join(HTML_OUT, 'renderer'),
+  })
+  if (headlessArgv.kind !== 'none') {
+    await runHeadlessExportEntry(headlessArgv)
+    return
+  }
+  const lockData = () =>
+    pendingLaunchPaths.length > 0
+      ? { launchPath: pendingLaunchPaths[0], launchPaths: pendingLaunchPaths }
+      : {}
   let hasLock = app.requestSingleInstanceLock(lockData())
   if (!hasLock && !app.isPackaged) {
     // Dev watch restart: electron-vite SIGTERMs the previous instance and spawns this
@@ -4198,6 +5674,17 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+  // another GenOffice-family app re-logging in rotates the shared key; the
+  // home page re-reads its account status. A logout that leaves only the
+  // gsk CLI fallback key is not a login
+  stopAuthWatch = watchGskApiKey(() => {
+    if (!loadGenofficeAuth()) return
+    for (const w of BrowserWindow.getAllWindows())
+      w.webContents.send(HOME_CHANNELS.accountLoginEvent, { phase: 'success' })
+  })
+  // a registry left by a crashed instance must not block genoffice writes
+  ownsOpenDocumentsRegistry = true
+  publishOpenDocuments(OPEN_DOCUMENTS_PATH(), [])
   if (!app.isPackaged) {
     try {
       writeFileSync(devPidFile(), String(process.pid))
@@ -4238,17 +5725,145 @@ app.whenReady().then(async () => {
   } catch {
     // settings write failures must never block startup
   }
+  // off the startup path: a symlink / registry write nobody is waiting for
+  setTimeout(() => installCliLinkBestEffort(APP_SETTINGS_PATH()), 3000)
   initAnalytics()
   analytics.track('app_launch')
   startSheetsCaptureServer()
+  // Register the docs renderer bridge listeners before the MCP server can take
+  // a visible-editing request.
+  installDocsBridge()
+  installSheetsBridge()
+  // MCP server: localhost-only, docx generation for external agents. Deps are
+  // injected so the mcp module never imports this file back.
+  // family controls are referenced twice (their own tools + the open-documents
+  // tool), so create them once here
+  const mcpDocsControl = createDocsControl({
+    openBlankTab: () => openBlankDocsTabForMcp(),
+    authorizeSave: authorizeMcpDocWrite,
+    abandonBlankTab: (wcId) => {
+      if (tabManager) abandonBlankTabForMcp(tabManager.docsTabs(), wcId)
+    },
+  })
+  const mcpSlidesControl = createSlidesControl({
+    openBlankTab: () => openBlankSlidesTabForMcp(),
+    abandonBlankTab: (wcId) => {
+      if (tabManager) abandonBlankTabForMcp(tabManager.slidesTabs(), wcId)
+    },
+  })
+  const mcpSheetsControl = createSheetsControl({
+    openBlankTab: () => openBlankSheetsTabForMcp(),
+    authorizeSave: authorizeMcpSheetWrite,
+    abandonBlankTab: (wcId) => abandonBlankSheetsTabForMcp(wcId),
+  })
+  configureMcpRuntime({
+    version: app.getVersion(),
+    defaultSaveDir: () => defaultSaveDir(),
+    openPath: (filePath) => routeDocumentPath(filePath),
+    docsControl: mcpDocsControl,
+    slidesControl: mcpSlidesControl,
+    sheetsControl: mcpSheetsControl,
+    // documents the user has open: the tab list plus each family's own bridge,
+    // so an agent reaches a tab nobody but the user opened
+    openDocumentsControl: createOpenDocumentsControl({
+      list: async () => {
+        const tabs = tabManager ? await tabManager.openDocuments() : []
+        return [...tabs, ...(await detachedOpenDocuments())]
+      },
+      webContentsFor: (tabId) =>
+        tabManager?.webContentsForTab(tabId) ?? detachedWebContentsFor(tabId),
+      closeTab: (tabId) =>
+        closeDetachedWithoutPrompt(tabId) || (tabManager?.closeTabWithoutPrompt(tabId) ?? false),
+      defaultSaveDir: () => defaultSaveDir(),
+      docs: mcpDocsControl,
+      sheets: mcpSheetsControl,
+      slides: mcpSlidesControl,
+      slidesDiscard: discardSlidesRecovery,
+      markdown: {
+        read: markdownReadText,
+        save: markdownSaveToPath,
+        discard: markdownDiscardPendingAssets,
+      },
+      html: {
+        read: htmlReadText,
+        save: htmlSaveToPath,
+        discard: htmlDiscardPendingAssets,
+      },
+    }),
+    // the headless create_*/read_* tools delegate to the bundled genoffice CLI
+    // (the same engines, no second implementation); it runs on the app's own
+    // Node runtime via ELECTRON_RUN_AS_NODE
+    cliRunner: createCliRunner({
+      executable: process.execPath,
+      entry: app.isPackaged
+        ? join(process.resourcesPath, 'cli', 'genoffice.cjs')
+        : join(APPS_ROOT, '..', 'packages', 'cli', 'dist', 'genoffice.cjs'),
+    }),
+    // lets the content tools take a `document` argument (tab id or path) and edit
+    // a tab the *user* has open, with no create_session involved
+    resolveTarget: createOpenTargetResolver({
+      list: async () => {
+        const tabs = tabManager ? await tabManager.openDocuments() : []
+        return [...tabs, ...(await detachedOpenDocuments())]
+      },
+      webContentsFor: (tabId) =>
+        tabManager?.webContentsForTab(tabId) ?? detachedWebContentsFor(tabId),
+      // an agent editing a background tab would otherwise work where nobody can
+      // see it: switch to that tab and bring its window forward first
+      activate: (tabId) => {
+        if (!activateDetached(tabId)) tabManager?.activateTab(tabId)
+      },
+      revealWindow: (tabId) => {
+        if (!isDetachedTabId(tabId)) revealShellWindow()
+      },
+    }),
+    logFilePath: join(app.getPath('userData'), 'mcp-log.txt'),
+  })
+  void startMcpFromSettings(currentMcpSettings()).catch((error) => {
+    console.error('[mcp] failed to start on boot:', error)
+  })
   createShellWindow()
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()
+  setUpdateCheckInvoker(() => void checkForUpdatesNow())
   initAutoUpdater(() => shellWindow, currentUpdateChannel())
+  // resource watchdog: a renderer that stays hot for minutes gets diagnostics
+  // recorded and the user an offer to close the document (headless exports
+  // are short-lived and unattended)
+  if (headlessArgv.kind === 'none') {
+    startRendererWatchdog({
+      describe: (wc) => tabManager?.describeWebContents(wc.id) ?? null,
+      parentWindow: (wc) => BrowserWindow.fromWebContents(wc) ?? shellWindow,
+      closeDocument: async (wc) => {
+        const id = tabManager?.tabIdForWebContents(wc.id)
+        if (id && tabManager) await tabManager.closeTab(id)
+        else BrowserWindow.fromWebContents(wc)?.close()
+      },
+      t: (key, params) => tm(key, params),
+    })
+  }
 
-  if (!pendingLaunchPath || !openDocumentPath(pendingLaunchPath)) tabManager?.openHomeTab()
-  pendingLaunchPath = null
+  openLaunchPaths(pendingLaunchPaths)
+  pendingLaunchPaths = []
+  for (const recoverAs of pendingUnsavedNewRecoveries()) void newSheetTab(recoverAs)
+
+  startControlServer(
+    app.getPath('userData'),
+    controlHandler({
+      reveal: revealShellWindow,
+      openDocument: openDocumentPath,
+      activateTab: (id) => {
+        if (!activateDetached(id)) tabManager?.activateTab(id)
+      },
+      findTab: (path) => tabManager?.findTabByPath(path) ?? findDetachedTabByPath(path),
+    }),
+  ).then(
+    (server) => {
+      controlServer = server
+    },
+    (err: unknown) => console.warn('[control] not listening:', err),
+  )
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createShellWindow()
@@ -4256,6 +5871,9 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  // A headless export destroys its hidden window between documents; only
+  // runHeadlessExportEntry decides when that run is over.
+  if (headlessArgv.kind !== 'none') return
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -4263,4 +5881,18 @@ app.on('before-quit', () => {
   // No close prompt may fall through to "Save" during shutdown
   markSheetsShuttingDown()
   stopSheetsSidecar()
+  // release the MCP port synchronously (macOS keeps the process alive after
+  // the last window closes, so window-all-closed is not enough)
+  stopMcpSync()
+})
+
+// after every window has closed, so the shell window's own 'closed' republish cannot revive the file
+app.on('will-quit', () => {
+  fileIndexer?.stop()
+  fileIndexStore?.close()
+  stopAuthWatch?.()
+  for (const watcher of folderWatchers.values()) watcher.close()
+  controlServer?.close()
+  // a second instance that lost the lock quits too; it must not delete the running editor's list
+  if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
 })

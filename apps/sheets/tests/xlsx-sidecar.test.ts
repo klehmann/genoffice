@@ -9,8 +9,8 @@ import { describe, expect, it } from 'vitest'
 import JSZip from 'jszip'
 import { z } from 'zod'
 
-import { blankXlsxBuffer } from '../src/gateway/csv-import'
-import { saveWorkbookViaSidecar } from '../src/gateway/xlsx-package-io'
+import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
+import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
 import { XlsxSidecarClient } from '../src/main/xlsx-sidecar-client'
 import { workbookRangeResultSchema } from '../src/shared/desktop-api'
 import { buildCompatibilityFixture } from './fixture-builder'
@@ -61,8 +61,8 @@ describe('XLSX Rust sidecar', () => {
         }),
       )
       expect(result.cells).toEqual([
-        { row: 0, column: 0, value: 'Old' },
-        { row: 0, column: 1, value: 10 },
+        { row: 0, column: 0, value: 'Old', styleIndex: 0 },
+        { row: 0, column: 1, value: 10, styleIndex: 0 },
       ])
     } finally {
       if (sessionId) await client.close(sessionId)
@@ -163,8 +163,8 @@ describe('XLSX Rust sidecar', () => {
         }),
       )
       expect(result.cells).toEqual([
-        { row: 0, column: 0, value: 'Shared\nBreak' },
-        { row: 0, column: 1, value: 'Inline\nBreak' },
+        { row: 0, column: 0, value: 'Shared\nBreak', styleIndex: 0 },
+        { row: 0, column: 1, value: 'Inline\nBreak', styleIndex: 0 },
       ])
     } finally {
       if (sessionId) await client.close(sessionId)

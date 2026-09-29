@@ -5,7 +5,7 @@ import {
   applyPrintAreas,
   buildHeaderFooterXml,
   PageSetupError,
-} from '../src/gateway/xlsx-page-setup'
+} from '@genoffice/xlsx-gateway/gateway/xlsx-page-setup'
 
 const BARE = '<worksheet><sheetData/></worksheet>'
 const WITH_VIEW =
@@ -63,6 +63,12 @@ describe('applyPageSetupState', () => {
     expect(patched).toContain('<printOptions headings="1"/>')
   })
 
+  it('applies the change to every printOptions match, not just the first', () => {
+    const xml = '<worksheet><sheetData/><printOptions headings="1"/><printOptions/></worksheet>'
+    const patched = applyPageSetupState(xml, { sheetName: 'S', printGridlines: true })
+    expect(patched.match(/<printOptions gridLines="1"/g)).toHaveLength(2)
+  })
+
   it('writes fit-to-page: pageSetUpPr plus fitToWidth/fitToHeight', () => {
     const xml = applyPageSetupState(BARE, {
       sheetName: 'S',
@@ -95,6 +101,22 @@ describe('applyPageSetupState', () => {
     expect(created).toContain(
       '<sheetViews><sheetView workbookViewId="0" showFormulas="1"/></sheetViews>',
     )
+  })
+
+  it('writes zoomScale and zoomScaleNormal, dropping both at 100% (r165)', () => {
+    const zoomed = applyPageSetupState(WITH_VIEW, { sheetName: 'S', zoomScale: 85 })
+    expect(zoomed).toContain('zoomScale="85"')
+    expect(zoomed).toContain('zoomScaleNormal="85"')
+    const reset = applyPageSetupState(zoomed, { sheetName: 'S', zoomScale: 100 })
+    expect(reset).not.toContain('zoomScale')
+    expect(reset).not.toContain('zoomScaleNormal')
+  })
+
+  it('creates sheetViews for a non-default zoom when missing', () => {
+    const xml = applyPageSetupState(BARE, { sheetName: 'S', zoomScale: 130 })
+    expect(xml).toContain('<sheetViews><sheetView ')
+    expect(xml).toContain('zoomScale="130"')
+    expect(xml).toContain('zoomScaleNormal="130"')
   })
 
   it('toggles sheetView@showGridLines, creating sheetViews when missing', () => {
@@ -167,6 +189,18 @@ describe('applyPageSetupState headerFooter', () => {
     const patched = applyPageSetupState(xml, { sheetName: 'S', header: { center: 'New' } })
     expect(patched).toContain('<oddHeader>&amp;CNew</oddHeader>')
     expect(patched).toContain('<oddFooter>&amp;RKeep</oddFooter>')
+    expect(patched).not.toContain('Old')
+  })
+
+  it('keeps "$" sequences in header text literal when overwriting an existing element', () => {
+    const xml =
+      '<worksheet><sheetData/><headerFooter>' +
+      '<oddHeader>&amp;LOld</oddHeader></headerFooter></worksheet>'
+    const patched = applyPageSetupState(xml, {
+      sheetName: 'S',
+      header: { left: "Revenue $'000", right: 'Ref $& $1 $$' },
+    })
+    expect(patched).toContain("<oddHeader>&amp;LRevenue $'000&amp;RRef $&amp; $1 $$</oddHeader>")
     expect(patched).not.toContain('Old')
   })
 
@@ -257,6 +291,35 @@ describe('applyPrintAreas', () => {
     )
   })
 
+  it('fills a self-closing <definedNames/> (Google Sheets export) instead of appending after it', () => {
+    const exported =
+      '<workbook><workbookPr/><sheets>' +
+      '<sheet state="visible" name="Form Responses 1" sheetId="1" r:id="rId5"/>' +
+      '</sheets><definedNames/><calcPr fullCalcOnLoad="1"/></workbook>'
+    const xml = applyPrintAreas(exported, [{ sheetName: 'Form Responses 1', printArea: 'A1:B2' }])
+    expect(xml.match(/<definedNames\b/g)).toHaveLength(1)
+    expect(xml).not.toContain('<definedNames/>')
+    expect(xml).toContain(
+      '</sheets><definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">' +
+        "'Form Responses 1'!$A$1:$B$2</definedName></definedNames><calcPr",
+    )
+    const cleared = applyPrintAreas(xml, [{ sheetName: 'Form Responses 1', printArea: null }])
+    expect(cleared).toBe(exported.replace('<definedNames/>', ''))
+  })
+
+  it('creates the container after externalReferences and before calcPr when absent', () => {
+    const workbook =
+      '<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>' +
+      '<externalReferences><externalReference r:id="rId2"/></externalReferences>' +
+      '<calcPr/></workbook>'
+    const xml = applyPrintAreas(workbook, [{ sheetName: 'Sheet1', printArea: 'A1:B2' }])
+    expect(xml.match(/<definedNames\b/g)).toHaveLength(1)
+    expect(xml).toContain(
+      '</externalReferences><definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">' +
+        "'Sheet1'!$A$1:$B$2</definedName></definedNames><calcPr/>",
+    )
+  })
+
   it('uses the workbook.xml sheet position for localSheetId and escapes names', () => {
     const xml = applyPrintAreas(WORKBOOK, [{ sheetName: 'P&L', printArea: 'B2:D4' }])
     expect(xml).toContain('localSheetId="1">\'P&amp;L\'!$B$2:$D$4')
@@ -287,6 +350,15 @@ describe('applyPrintAreas', () => {
     )
     expect(() => applyPrintAreas(WORKBOOK, [{ sheetName: 'Sheet1', printArea: 'A1;B2' }])).toThrow(
       PageSetupError,
+    )
+  })
+
+  it('rejects a print area without a row-bounded range (our reader and schema only accept A1:B2 forms)', () => {
+    expect(() => applyPrintAreas(WORKBOOK, [{ sheetName: 'Sheet1', printArea: 'A:A' }])).toThrow(
+      PageSetupError,
+    )
+    expect(() => applyPrintAreas(WORKBOOK, [{ sheetName: 'Sheet1', printArea: 'A1:B' }])).toThrow(
+      'Invalid print area "A1:B".',
     )
   })
 
